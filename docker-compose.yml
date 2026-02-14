@@ -77,6 +77,21 @@ services:
     networks:
       - hospital-network
 
+  # Nginx Reverse Proxy
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    container_name: hospital-nginx
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - hospital-network
+    restart: unless-stopped
+
 networks:
   hospital-network:
     driver: bridge
