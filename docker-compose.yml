@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # MQTT Broker
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: hospital-mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    networks:
+      - hospital-network
+
+  # Backend Server
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: hospital-backend
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+    environment:
+      - MQTT_BROKER=mosquitto
+      - MQTT_PORT=1883
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      - mosquitto
+    networks:
+      - hospital-network
+    restart: unless-stopped
+
+  # Frontend Development Server
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: hospital-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_WS_HOST=localhost
+      - REACT_APP_WS_PORT=3002
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - hospital-network
+    stdin_open: true
+    tty: true
+
+  # Test Publisher (simulates MQTT data)
+  test-publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: hospital-test-publisher
+    command: node test-publisher-spec.js
+    environment:
+      - MQTT_BROKER=mosquitto
+      - MQTT_PORT=1883
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      - mosquitto
+      - backend
+    networks:
+      - hospital-network
+
+networks:
+  hospital-network:
+    driver: bridge
