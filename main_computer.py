@@ -1,111 +1,238 @@
-import socket
-import numpy as np
-from scipy.optimize import least_squares
+
+
+import paho.mqtt.client as mqtt
+import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
+from collections import defaultdict
+import threading
 
 
-UDP_IP = "0.0.0.0" 
-UDP_PORT = 5005
-TX_POWER = -59 
-LOOP_DELAY = 0.5
-TIMEOUT_SECONDS = 3  
+MQTT_BROKER = "localhost"  
+MQTT_PORT = 1883
+MQTT_QOS = 1
 
-SENSORS = {
-    0: {'name': 'Raspberry Pi', 'x': 2.0, 'y': 3.0},
-    1: {'name': 'Pico 1',       'x': 0.0, 'y': 0.0},
-    2: {'name': 'Pico 2',       'x': 4.0, 'y': 0.0}
-}
-
-def rssi_to_dist(rssi):
-    if rssi == 0: return 0.0
-    return 10**((TX_POWER - rssi) / (10 * 2))
-
-def trilaterate(sensor_positions, distances):
-    def residuals(point, positions, dists):
-        return [np.linalg.norm(point - p) - d for p, d in zip(positions, dists)]
-    initial_guess = np.mean(sensor_positions, axis=0)
-    result = least_squares(residuals, initial_guess, args=(sensor_positions, distances))
-    return result.x
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind((UDP_IP, UDP_PORT))
-sock.setblocking(False)
-
-current_dists = {}
-last_update = {}  # Track when each device last reported
-center_point = np.mean([[s['x'], s['y']] for s in SENSORS.values()], axis=0)
-
-print(f"Monitoring Distances on Port {UDP_PORT}...")
-print("Waiting for device reports (min 1 device, max 3 devices)...\n")
-
-while True:
-    try:
-
-        while True:
-            try:
-                data, addr = sock.recvfrom(1024)
-                line = data.decode().strip()
-                if line.startswith("REPORT"):
-                    _, s_id, rssi = line.split(',')
-                    s_id, rssi = int(s_id), int(rssi)
-                    current_dists[s_id] = rssi_to_dist(rssi)
-                    last_update[s_id] = datetime.now()
-            except BlockingIOError:
-                break
+# Election timing
+VOTE_COLLECTION_PERIOD = 2 
+ELECTION_INTERVAL = 5       
 
 
-        now = datetime.now()
-        stale_devices = [s_id for s_id, last_time in last_update.items() 
-                        if (now - last_time).total_seconds() > TIMEOUT_SECONDS]
-        for s_id in stale_devices:
-            del current_dists[s_id]
-            del last_update[s_id]
 
+class ElectionCoordinator:
 
-        if current_dists:
-            print("\n--- SENSOR READINGS ---")
-            active_count = len(current_dists)
-            print(f"Active Devices: {active_count}/3")
+    
+    def __init__(self, broker, port):
+        self.broker = broker
+        self.port = port
+        self.client = mqtt.Client(client_id="coordinator")
+        
+        # Vote storage: {mac_address: {device_id: vote_data}}
+        self.votes = defaultdict(dict)
+        self.vote_lock = threading.Lock()
+        
+        # Statistics
+        self.election_count = 0
+        self.publish_count = 0
+        self.last_winner = None
+        
+        # Setup callbacks
+        self.client.on_connect = self._on_connect
+        self.client.on_message = self._on_message
+    
+    def _on_connect(self, client, userdata, flags, rc):
+        """Called when connected to MQTT broker"""
+        if rc == 0:
+            print(f"Connected to MQTT broker at {self.broker}:{self.port}")
+            # Subscribe to all election votes
+            self.client.subscribe("election/votes/#", qos=MQTT_QOS)
+            print("Subscribed to: election/votes/#")
+            print("Waiting for votes...\n")
+        else:
+            print(f"Connection failed with code {rc}")
+    
+    def _on_message(self, client, userdata, msg):
+
+        try:
+            # Parse vote
+            vote_data = json.loads(msg.payload.decode())
+            device_id = vote_data.get('receiver_id')
+            mac = vote_data.get('mac')
+            rssi = vote_data.get('rssi')
             
-            for s_id, dist in sorted(current_dists.items()):
-                print(f"{SENSORS[s_id]['name']}: {dist:.2f} m")
+            if not all([device_id, mac, rssi]):
+                print(f"Invalid vote from {msg.topic}")
+                return
             
-
-            if active_count == 3:
-                active_ids = list(current_dists.keys())
-                pos_list = np.array([[SENSORS[i]['x'], SENSORS[i]['y']] for i in active_ids])
-                dist_list = np.array([current_dists[i] for i in active_ids])
+            # Store vote
+            with self.vote_lock:
+                self.votes[mac][device_id] = vote_data
+            
+            # Print vote received
+            temp = vote_data.get('temperature', 'N/A')
+            battery = vote_data.get('battery', 'N/A')
+            print(f"Vote: {device_id:15} | MAC: {mac} | RSSI: {rssi:4} dBm | Temp: {temp}°C | Bat: {battery}%")
+            
+        except Exception as e:
+            print(f"Error processing vote: {e}")
+    
+    def run_election(self):
+        with self.vote_lock:
+            # Copy votes and clear for next election
+            current_votes = dict(self.votes)
+            self.votes.clear()
+        
+        if not current_votes:
+            print("No votes received this round\n")
+            return
+        
+        self.election_count += 1
+        print(f"\n{'='*70}")
+        print(f"ELECTION #{self.election_count}")
+        print(f"{'='*70}")
+        
+        # Process each M5StickC (MAC address)
+        for mac, device_votes in current_votes.items():
+            print(f"\nM5StickC: {mac}")
+            print(f"Votes received: {len(device_votes)}")
+            
+            # Find device with strongest RSSI (most negative = closest)
+            winner_id = None
+            winner_data = None
+            strongest_rssi = -999  # Start with very weak signal
+            
+            for device_id, vote_data in device_votes.items():
+                rssi = vote_data['rssi']
+                print(f"  {device_id:15} | RSSI: {rssi:4} dBm")
                 
-                target_xy = trilaterate(pos_list, dist_list)
-                final_dist = np.linalg.norm(target_xy - center_point)
-                print(f"TRILATERATION: Position ({target_xy[0]:.2f}, {target_xy[1]:.2f})")
-                print(f"FINAL DISTANCE: {final_dist:.2f} m")
+                if rssi > strongest_rssi:
+                    strongest_rssi = rssi
+                    winner_id = device_id
+                    winner_data = vote_data
             
-
-            elif active_count == 2:
-                active_ids = list(current_dists.keys())
-                pos_list = np.array([[SENSORS[i]['x'], SENSORS[i]['y']] for i in active_ids])
-                dist_list = np.array([current_dists[i] for i in active_ids])
+            if winner_data:
+                print(f"\nWINNER: {winner_id} (RSSI: {strongest_rssi} dBm)")
+                self.last_winner = winner_id
                 
-                target_xy = trilaterate(pos_list, dist_list)
-                final_dist = np.linalg.norm(target_xy - center_point)
-                print(f"BILATERATION: Estimated position ({target_xy[0]:.2f}, {target_xy[1]:.2f})")
-                print(f"FINAL DISTANCE: {final_dist:.2f} m (from center)")
-            
-
+                # Publish winner's medicine data
+                self.publish_medicine_data(winner_data)
             else:
-                only_id = list(current_dists.keys())[0]
-                print(f"SINGLE DEVICE: Direct distance measurement")
-                print(f"FINAL DISTANCE: {current_dists[only_id]:.2f} m (from {SENSORS[only_id]['name']})")
+                print("No valid votes for this M5StickC")
+        
+        print(f"{'='*70}\n")
+    
+    def publish_medicine_data(self, vote_data):
+        mac = vote_data['mac']
+        receiver_id = vote_data['receiver_id']
+        
+        # Topic format matches original system
+        topic = f"hospital/medicine/rssi/{receiver_id}/{mac}"
+        
+        # Build payload (same format as original system)
+        payload = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'receiver_id': receiver_id,
+            'mac': mac,
+            'rssi': vote_data['rssi'],
+            'temperature': vote_data['temperature'],
+            'battery': vote_data['battery'],
+            'status_flags': vote_data['status_flags'],
+            'status': vote_data['status'],
+            'sequence_number': vote_data['sequence_number'],
+            'device_name': vote_data['device_name']
+        }
+        
+        try:
+            result = self.client.publish(
+                topic,
+                json.dumps(payload),
+                qos=MQTT_QOS
+            )
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                self.publish_count += 1
+                print(f"Published: {vote_data['device_name']} | Temp: {vote_data['temperature']}°C | Battery: {vote_data['battery']}%")
+            else:
+                print(f"Publish failed: {result.rc}")
+        
+        except Exception as e:
+            print(f"Error publishing: {e}")
+    
+    def publish_coordinator_status(self):
+        topic = "hospital/system/coordinator_status"
+        
+        payload = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'election_count': self.election_count,
+            'publish_count': self.publish_count,
+            'last_winner': self.last_winner,
+            'status': 'online'
+        }
+        
+        try:
+            self.client.publish(topic, json.dumps(payload), qos=1)
+        except Exception as e:
+            print(f"Status publish failed: {e}")
+    
+    def start(self):
+        print("="*70)
+        print("MQTT Election Coordinator")
+        print("="*70)
+        print(f"MQTT Broker:         {self.broker}:{self.port}")
+        print(f"Vote Collection:     {VOTE_COLLECTION_PERIOD} seconds")
+        print(f"Election Interval:   {ELECTION_INTERVAL} seconds")
+        print("="*70)
+        print()
+        
 
-        time.sleep(LOOP_DELAY)
+        try:
+            self.client.connect(self.broker, self.port, keepalive=60)
+        except Exception as e:
+            print(f"Failed to connect to MQTT broker: {e}")
+            return
+        
 
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-        break
-    except Exception as e:
-        print(f"Error: {e}")
-        continue
+        self.client.loop_start()
+        
+        # Wait for connection
+        time.sleep(2)
+        
+        # Main election loop
+        try:
+            last_status = time.time()
+            
+            while True:
 
-sock.close()
+                time.sleep(VOTE_COLLECTION_PERIOD)
+                
+                # Run election
+                self.run_election()
+                
+
+                if time.time() - last_status >= 60:
+                    self.publish_coordinator_status()
+                    last_status = time.time()
+                
+
+                remaining = ELECTION_INTERVAL - VOTE_COLLECTION_PERIOD
+                if remaining > 0:
+                    time.sleep(remaining)
+        
+        except KeyboardInterrupt:
+            print("\nStopping coordinator...")
+        finally:
+            self.client.loop_stop()
+            self.client.disconnect()
+            print(f"\nTotal elections: {self.election_count}")
+            print(f"Total publishes: {self.publish_count}")
+            print("Coordinator stopped")
+
+
+
+def main():
+    """Entry point"""
+    coordinator = ElectionCoordinator(MQTT_BROKER, MQTT_PORT)
+    coordinator.start()
+
+
+if __name__ == "__main__":
+    main()
