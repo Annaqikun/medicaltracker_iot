@@ -38,9 +38,10 @@ with sqlite3.connect("hospital_iot.db") as conn:
                 receiver_id TEXT NOT NULL,
                 rssi INTEGER NOT NULL,
                 timestamp TEXT NOT NULL,
+                sequence_number INTEGER NOT NULL,
                 FOREIGN KEY (tag_id) REFERENCES medicine_tags(tag_id),
                 FOREIGN KEY (receiver_id) REFERENCES receivers(receiver_id),
-                UNIQUE(tag_id, receiver_id, timestamp)
+                UNIQUE(tag_id, receiver_id, sequence_number)
             )
         """)
         print("Table #3 Created Successfully.")
