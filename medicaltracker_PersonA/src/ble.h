@@ -1,12 +1,12 @@
 #pragma once
 
 #include <Arduino.h>
-#include <string>
 
-extern String medicineName;
-
+// Initialize BLE and start advertising
 void initBLE();
+
+// Update advertising data with latest info
 void updateAdvertising();
-String getMacString();
 
-
+// Provide latest temperature value to BLE advertising payload
+void setAdvertisedTemperature(float gotTemperature);

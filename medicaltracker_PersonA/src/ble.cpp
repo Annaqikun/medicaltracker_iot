@@ -1,46 +1,48 @@
 #include "ble.h"
+#include "mac.h"
+#include "med.h"
 
-#include <M5Unified.h>
 #include <BLEDevice.h>
 #include <BLEAdvertising.h>
-#include <esp_bt_device.h>
+#include <math.h>
 
 static BLEAdvertising* adv = nullptr;
 
-String medicineName = "PANADOL";
+static float advertisedTemperature = 25.00f;
 
-String getMacString() {
-  const uint8_t* mac = esp_bt_dev_get_address();
-  char buf[18];
-  sprintf(buf, "%02X:%02X:%02X:%02X:%02X:%02X",
-          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  return String(buf);
+void setAdvertisedTemperature(float gotTemperature) {
+  advertisedTemperature = gotTemperature;
 }
 
 /*
 Manufacturer Data Layout:
-
 Byte 0-1  : Company ID (0xFFFF, little-endian)
 Byte 2-7  : Device MAC address (6 bytes, raw)
-Byte 8-19 : Medicine name (12 bytes, ASCII, space padded)
-
-Total length: 20 bytes
+Byte 8-19 : Medicine name (12 bytes, ASCII, space padded, truncated if >12)
+Byte 20-21 : Temperature (2 bytes, signed int16, 0.01°C, big-endian hi,lo)
 */
-std::string buildMfgData(const String& med) {
+static std::string buildMfgData(const String& med, float temp) {
   std::string s;
-  s.reserve(20);
+  s.reserve(22);
 
   s.push_back((char)0xFF);
   s.push_back((char)0xFF);
 
-  const uint8_t* mac = esp_bt_dev_get_address();
+  uint8_t mac[6];
+  getMacBytes(mac);
   for (int i = 0; i < 6; i++) s.push_back((char)mac[i]);
 
   String m = med;
   if (m.length() > 12) m = m.substring(0, 12);
   while (m.length() < 12) m += ' ';
-
   s.append(m.c_str(), 12);
+
+  int16_t t100 = (int16_t)lroundf(temp * 100.0f);
+  uint8_t hi = (uint8_t)((t100 >> 8) & 0xFF);
+  uint8_t lo = (uint8_t)(t100 & 0xFF);
+
+  s.push_back((char)hi);
+  s.push_back((char)lo);
 
   return s;
 }
@@ -51,7 +53,7 @@ void updateAdvertising() {
   ad.setName("MED_TAG");
 
   BLEAdvertisementData sd;
-  sd.setManufacturerData(buildMfgData(medicineName));
+  sd.setManufacturerData(buildMfgData(getMedicineName(), advertisedTemperature));
 
   adv->stop();
   adv->setAdvertisementData(ad);
