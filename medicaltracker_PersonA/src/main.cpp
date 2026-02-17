@@ -2,10 +2,29 @@
 #include "mac.h"
 #include "med.h"
 #include "temp.h"
+#include "battery.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
 
+void drawM5Screen() {
+  M5.Display.clearDisplay();
+  M5.Display.setCursor(0, 0);
+  M5.Display.setTextSize(1);
+
+  M5.Display.println("BLE ADV OK");
+  M5.Display.printf("MAC:\n%s\n", getMacString().c_str());
+  M5.Display.printf("MED:%s\n", getMedicineName().c_str());
+  M5.Display.printf("T:%.2fC\n", getTemperature());
+  M5.Display.printf("B:%u%%\n", getBatteryPercent());
+}
+
+void drawSerial() {
+  Serial.printf("MAC: %s\n", getMacString().c_str());
+  Serial.printf("MED: %s\n", getMedicineName().c_str());
+  Serial.printf("Temp(C): %.2f\n", getTemperature());
+  Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
+}
 
 void setup() {
   auto cfg = M5.config();
@@ -15,54 +34,51 @@ void setup() {
   delay(3000);
 
   initTemp();
+  initBattery();
+
   setAdvertisedTemperature(getTemperature());
+  setAdvertisedBatteryPercent(getBatteryPercent());
 
   initBLE();
 
-  String macStr = getMacString();
-
-  M5.Display.clearDisplay();
-  M5.Display.setCursor(0, 0);
-  M5.Display.setTextSize(1);
-  M5.Display.println("BLE ADV OK");
-  M5.Display.printf("MAC:\n%s\n", macStr.c_str());
-  M5.Display.printf("MED:%s\n", getMedicineName().c_str());
-  M5.Display.printf("T:%.2fC\n", getTemperature());
+  drawM5Screen();
 
   Serial.println("Advertising started");
-  Serial.print("MAC: "); Serial.println(macStr);
-  Serial.print("MED: "); Serial.println(getMedicineName());
-  Serial.print("Temp(C): "); Serial.println(getTemperature(), 2);
+  drawSerial();
 }
 
 void loop() {
   M5.update();
 
-  if (tempTask()) {
-    float t = getTemperature();
-    setAdvertisedTemperature(t);
-    updateAdvertising();
+  bool bleDirty = false;
+  bool displayDirty = false;
 
-    M5.Display.clearDisplay();
-    M5.Display.setCursor(0, 0);
-    M5.Display.println("BLE ADV OK");
-    M5.Display.printf("MAC:\n%s\n", getMacString().c_str());
-    M5.Display.printf("MED:%s\n", getMedicineName().c_str());
-    M5.Display.printf("T:%.2fC\n", t);
+  if (tempTask()) {
+    setAdvertisedTemperature(getTemperature());
+    bleDirty = true;
+    displayDirty = true;
+  }
+
+  if (batteryTask()) {
+    setAdvertisedBatteryPercent(getBatteryPercent());
+    bleDirty = true;
+    displayDirty = true;
   }
 
   if (M5.BtnA.wasPressed()) {
     toggleMedicine();
-    updateAdvertising();
+    bleDirty = true;
+    displayDirty = true;
     Serial.printf("[%lu] MED changed: %s\n", millis(), getMedicineName().c_str());
   }
 
   if (M5.BtnB.wasPressed()) {
     Serial.println("=== STATUS ===");
-    Serial.print("MAC: "); Serial.println(getMacString());
-    Serial.print("MED: "); Serial.println(getMedicineName());
-    Serial.print("Temp: "); Serial.println(getTemperature(), 2);
+    drawSerial();
   }
 
+  if (bleDirty) updateAdvertising();
+  if (displayDirty) drawM5Screen();
+  
   delay(10);
 }

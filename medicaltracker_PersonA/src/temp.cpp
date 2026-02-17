@@ -43,7 +43,7 @@ bool tempTask() {
                 (uint8_t)((t100 >> 8) & 0xFF),
                 (uint8_t)(t100 & 0xFF));
 
-  // Only trigger BLE update if changed meaningfully
+  // Only trigger BLE update if changed
   if (fabs(t - latestTemperature) > 0.01f) {
     latestTemperature = t;
     return true;

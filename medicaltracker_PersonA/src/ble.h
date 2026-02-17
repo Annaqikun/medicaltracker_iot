@@ -10,3 +10,6 @@ void updateAdvertising();
 
 // Provide latest temperature value to BLE advertising payload
 void setAdvertisedTemperature(float gotTemperature);
+
+// Provide latest battery % to BLE advertising payload
+void setAdvertisedBatteryPercent(uint8_t percent);
