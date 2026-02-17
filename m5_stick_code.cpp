@@ -16,7 +16,7 @@ struct StatusFlags {
 void setup() {
   auto cfg = M5.config();
   StickCP2.begin(cfg);
-  
+  StickCP2.Display.setBrightness(30);
   StickCP2.Display.setRotation(1);
   StickCP2.Display.fillScreen(BLACK);
   StickCP2.Display.setTextSize(2);
@@ -82,5 +82,5 @@ void loop() {
   Serial.print("Device Name: ");
   Serial.println(deviceName);
   
-  delay(5000);
+  delay(10000);
 }

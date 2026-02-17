@@ -54,7 +54,9 @@ try:
         MQTT_CLIENT_ID,
         MQTT_BROKER,
         port=MQTT_PORT,
-        keepalive=60
+        keepalive=60,
+        user = "pico_2",
+        password = "1234"
     )
     mqtt_client.connect()
     print("Connected to MQTT broker")
@@ -68,7 +70,7 @@ ble = bluetooth.BLE()
 ble.active(True)
 last_device_name = None
 last_parsed_data = None
-vote_count = 0
+scan_count = 0
 
 def parse_device_name(name, mac):
     """Parse M5StickC device name: MT{temp}_{battery}_{seq}"""
@@ -100,11 +102,11 @@ def parse_device_name(name, mac):
 
 
 
-def publish_vote(mac, rssi, parsed_data):
+def publish_scan(mac, rssi, parsed_data):
 
-    global vote_count
-    
-    topic = f"election/votes/pico_{PICO_ID}"
+    global scan_count
+
+    topic = f"hospital/medicine/scan/pico_{PICO_ID}"
     
     payload = {
         'receiver_id': f"pico_{PICO_ID}",
@@ -125,8 +127,8 @@ def publish_vote(mac, rssi, parsed_data):
             json.dumps(payload).encode(),
             qos=1
         )
-        vote_count += 1
-        print(f"Vote {vote_count}: {parsed_data['device_name']} ({mac}) | RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}°C | Bat: {parsed_data['battery']}%")
+        scan_count += 1
+        print(f"Scan {scan_count}: {parsed_data['device_name']} ({mac}) | RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}°C | Bat: {parsed_data['battery']}%")
         return True
     except Exception as e:
         print(f"Publish failed: {e}")
@@ -135,13 +137,33 @@ def publish_vote(mac, rssi, parsed_data):
 
 
 
+def publish_rssi(mac, rssi):
+    topic = f"hospital/medicine/rssi_only/{mac}"
+
+    payload = {
+        'timestamp': f"{time.time()}",
+        'receiver_id': f"pico_{PICO_ID}",
+        'mac': mac,
+        'rssi': rssi
+    }
+
+    try:
+        mqtt_client.publish(
+            topic.encode(),
+            json.dumps(payload).encode(),
+            qos=1
+        )
+    except Exception as e:
+        print(f"RSSI publish failed: {e}")
+
+
 def publish_heartbeat():
     topic = f"hospital/system/pico_status/pico_{PICO_ID}"
     
     payload = {
         'timestamp': f"{time.time()}",
         'device_id': f"pico_{PICO_ID}",
-        'vote_count': vote_count,
+        'scan_count': scan_count,
         'status': 'online'
     }
     
@@ -200,9 +222,10 @@ def irq(event, data):
                     if device_name != last_device_name:
                         last_device_name = device_name
                         last_parsed_data = parsed_data
-                        publish_vote(mac, rssi, parsed_data)
-                    # Uncomment below to pubnlighs all data (debugging)
-                    # publish_vote(mac, rssi, parsed_data)
+                        publish_scan(mac, rssi, parsed_data)
+                        publish_rssi(mac, rssi)
+                    # Uncomment below to publish all data (debugging)
+                    # publish_scan(mac, rssi, parsed_data)
             else:
                 # Device name not available yet, just report RSSI
                 print(f"Found tag! MAC: {mac} | RSSI: {rssi} | adv_type: {adv_type} (waiting for name...)")
@@ -210,7 +233,7 @@ def irq(event, data):
     elif event == _IRQ_SCAN_DONE:
         ble.gap_scan(0, 60000, 30000, True)
 
-print(f"Scanning for {TAG_MAC} and publishing votes to MQTT...")
+print(f"Scanning for {TAG_MAC} and publishing scans to MQTT...")
 print("Press Ctrl+C to stop")
 
 ble.irq(irq)
@@ -230,7 +253,7 @@ except KeyboardInterrupt:
     print("\nStopping...")
     ble.gap_scan(None)
     mqtt_client.disconnect()
-    print(f"Total votes published: {vote_count}")
+    print(f"Total scans published: {scan_count}")
     print("Disconnected")
 
 

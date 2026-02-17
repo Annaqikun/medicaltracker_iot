@@ -12,8 +12,8 @@ import psutil
 MQTT_BROKER = "192.168.1.9"  # Change to router IP for production
 MQTT_PORT = 1883           # 8883 for TLS in production
 MQTT_QOS = 1
-MQTT_USERNAME = None
-MQTT_PASSWORD = None
+MQTT_USERNAME = "rpi4_zone_a"
+MQTT_PASSWORD = "1234"
 
 
 RECEIVER_ID = "rpi4_zone_a"
@@ -31,7 +31,7 @@ DEVICE_NAME_PATTERN = "MediTag"
 
 parser = M5StickCNameParser()
 
-class MQTTVoter:
+class MQTTPublisher:
 
 
     def __init__(self, broker: str, port: int, receiver_id: str,
@@ -52,6 +52,18 @@ class MQTTVoter:
 
         self.connected = False
         self.publish_count = 0
+    
+    def publish_rssi(self, mac:str,rssi:int):
+        topic = f"hospital/medicine/rssi_only/{mac}"
+
+        payload = {
+            'timestamp':datetime.utcnow().isoformat() + 'Z',
+            'receiver_id': self.receiver_id,
+            'mac': mac,
+            'rssi': rssi
+        }
+
+        self.client.publish(topic,json.dumps(payload),qos=MQTT_QOS)
 
     def _on_connect(self, client, userdata, flags, rc):
 
@@ -88,11 +100,11 @@ class MQTTVoter:
                 raise Exception("Connection timeout")
 
         except Exception as e:
-            print(f"✗ Failed to connect to MQTT broker: {e}")
+            print(f"Failed to connect to MQTT broker: {e}")
             raise
 
-    def publish_vote(self, mac: str, rssi: int, parsed_data: dict):
-        topic = f"election/votes/{self.receiver_id}"
+    def publish_scan(self, mac: str, rssi: int, parsed_data: dict):
+        topic = f"hospital/medicine/scan/{self.receiver_id}"
 
         # Build JSON payload matching task requirements
         payload = {
@@ -162,7 +174,7 @@ async def scan_and_publish():
     print()
 
 
-    publisher = MQTTVoter(
+    publisher = MQTTPublisher(
         MQTT_BROKER,
         MQTT_PORT,
         RECEIVER_ID,
@@ -193,7 +205,8 @@ async def scan_and_publish():
             parsed_data = parser.parse_device_name(device_name,mac)
 
             if parsed_data:
-                publisher.publish_vote(mac,rssi,parsed_data)
+                publisher.publish_scan(mac,rssi,parsed_data)
+                publisher.publish_rssi(mac,rssi)
 
     scanner = BleakScanner(callback, scanning_mode="active")
 

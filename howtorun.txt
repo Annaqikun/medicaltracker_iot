@@ -1,0 +1,147 @@
+cd "C:\Program Files\mosquitto"
+mosquitto -c mosquitto.conf -v
+
+# See all scan data
+mosquitto_sub -h localhost -t "hospital/medicine/scan/#" -v
+
+# See RSSI-only data
+mosquitto_sub -h localhost -t "hospital/medicine/rssi_only/#" -v
+
+# See deduplicated data from main_computer
+mosquitto_sub -h localhost -t "hospital/medicine/rssi/#" -v
+
+# See everything in the hospital topic tree
+mosquitto_sub -h localhost -t "hospital/#" -v
+
+
+# Pico heartbeat
+mosquitto_sub -h localhost -t "hospital/system/pico_status/#" -v
+
+# RPi heartbeat
+mosquitto_sub -h localhost -t "hospital/system/rpi_status/#" -v
+
+# All heartbeats at once
+mosquitto_sub -h localhost -t "hospital/system/#" -v
+
+Step 1: Generate TLS Certificates
+From your project folder:
+
+
+cd "C:\Users\delvi\OneDrive\Desktop\SIT_Stuff\year2\IOT\project"
+
+openssl req -x509 -newkey rsa:4096 -keyout ca.key -out ca.crt -days 365 -nodes -subj "/CN=MosquittoCA"
+
+openssl req -newkey rsa:4096 -keyout server.key -out server.csr -nodes -subj "/CN=192.168.1.9"
+
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 365
+Step 2: Create Users/Passwords
+From the Mosquitto folder (admin terminal):
+
+
+cd "C:\Program Files\mosquitto"
+
+mosquitto_passwd -c passwordfile rpi4_zone_a
+(type 1234 when prompted)
+
+
+mosquitto_passwd -b passwordfile pico_1 1234
+mosquitto_passwd -b passwordfile pico_2 1234
+mosquitto_passwd -b passwordfile coordinator 1234
+mosquitto_passwd -b passwordfile dashboard 1234
+Step 3: Create ACL File
+Create acl in your project folder with:
+
+
+# RPi4
+user rpi4_zone_a
+topic write hospital/medicine/scan/rpi4_zone_a
+topic write hospital/medicine/rssi_only/#
+topic write hospital/system/rpi_status/rpi4_zone_a
+
+# Pico 1
+user pico_1
+topic write hospital/medicine/scan/pico_1
+topic write hospital/medicine/rssi_only/#
+topic write hospital/system/pico_status/pico_1
+
+# Pico 2
+user pico_2
+topic write hospital/medicine/scan/pico_2
+topic write hospital/medicine/rssi_only/#
+topic write hospital/system/pico_status/pico_2
+
+# Coordinator (main_computer)
+user coordinator
+topic read hospital/medicine/scan/#
+topic write hospital/medicine/rssi/#
+topic write hospital/system/coordinator_status
+
+# Dashboard - read only
+user dashboard
+topic read hospital/#
+Step 4: Update mosquitto.conf
+Replace the top of C:\Program Files\mosquitto\mosquitto.conf with:
+
+
+# Non-TLS listener
+listener 1883 0.0.0.0
+allow_anonymous false
+password_file C:/Program Files/mosquitto/passwordfile
+acl_file C:/Users/delvi/OneDrive/Desktop/SIT_Stuff/year2/IOT/project/acl
+
+# TLS listener
+listener 8883 0.0.0.0
+allow_anonymous false
+password_file C:/Program Files/mosquitto/passwordfile
+acl_file C:/Users/delvi/OneDrive/Desktop/SIT_Stuff/year2/IOT/project/acl
+cafile C:/Users/delvi/OneDrive/Desktop/SIT_Stuff/year2/IOT/project/ca.crt
+certfile C:/Users/delvi/OneDrive/Desktop/SIT_Stuff/year2/IOT/project/server.crt
+keyfile C:/Users/delvi/OneDrive/Desktop/SIT_Stuff/year2/IOT/project/server.key
+Step 5: Add Credentials to Code
+mqtt_publisher.py (lines 15-16):
+
+
+MQTT_USERNAME = "rpi4_zone_a"
+MQTT_PASSWORD = "1234"
+main_computer.py (after line 18):
+
+
+self.client = mqtt.Client(client_id="coordinator")
+self.client.username_pw_set("coordinator", "1234")
+main_pico.py (Pico 1):
+
+
+mqtt_client = MQTTClient(
+    MQTT_CLIENT_ID, MQTT_BROKER,
+    port=MQTT_PORT, keepalive=60,
+    user="pico_1", password="1234"
+)
+main_pico.py (Pico 2):
+
+
+user="pico_2", password="1234"
+Step 6: Start Everything
+
+# 1. Kill old Mosquitto (admin terminal)
+net stop mosquitto
+
+# 2. Start Mosquitto
+cd "C:\Program Files\mosquitto"
+mosquitto -c mosquitto.conf -v
+
+# 3. Main computer (new terminal)
+python main_computer.py
+
+# 4. RPi publisher (new terminal)
+python mqtt_publisher.py
+
+# 5. Upload main_pico.py to Pico(s) and power on
+
+# 6. Power on M5StickC
+Step 7: Verify
+
+# Test auth works
+mosquitto_sub -h localhost -p 1883 -u coordinator -P 1234 -t "hospital/#" -v
+
+# Test ACL works (this should be DENIED)
+mosquitto_pub -h localhost -p 1883 -u dashboard -P 1234 -t "hospital/medicine/scan/test" -m "hack"
