@@ -3,6 +3,7 @@
 #include "med.h"
 #include "temp.h"
 #include "battery.h"
+#include "movement.h"
 
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -17,6 +18,7 @@ void drawM5Screen() {
   M5.Display.printf("MED:%s\n", getMedicineName().c_str());
   M5.Display.printf("T:%.2fC\n", getTemperature());
   M5.Display.printf("B:%u%%\n", getBatteryPercent());
+  M5.Display.printf("Move:%s\n", isMoving() ? "MOVING" : (isStationary() ? "STATIONARY" : "IDLE"));
 }
 
 void drawSerial() {
@@ -24,6 +26,7 @@ void drawSerial() {
   Serial.printf("MED: %s\n", getMedicineName().c_str());
   Serial.printf("Temp(C): %.2f\n", getTemperature());
   Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
+  Serial.printf("Move: %s  |a|=%.2fg\n", isMoving() ? "MOVING" : (isStationary() ? "STATIONARY" : "IDLE"), getAccelMagnitude());
 }
 
 void setup() {
@@ -35,9 +38,12 @@ void setup() {
 
   initTemp();
   initBattery();
+  initMovement();
 
   setAdvertisedTemperature(getTemperature());
   setAdvertisedBatteryPercent(getBatteryPercent());
+  setAdvertisedMoving(isMoving());
+  setAdvertisedStationary(isStationary());
 
   initBLE();
 
@@ -53,6 +59,18 @@ void loop() {
   bool bleDirty = false;
   bool displayDirty = false;
 
+  if (M5.BtnA.wasPressed()) {
+    toggleMedicine();
+    bleDirty = true;
+    displayDirty = true;
+    Serial.printf("[%lu] MED changed: %s\n", millis(), getMedicineName().c_str());
+  }
+
+  if (M5.BtnB.wasPressed()) {
+    Serial.println("=== STATUS ===");
+    drawSerial();
+  }
+
   if (tempTask()) {
     setAdvertisedTemperature(getTemperature());
     bleDirty = true;
@@ -65,16 +83,11 @@ void loop() {
     displayDirty = true;
   }
 
-  if (M5.BtnA.wasPressed()) {
-    toggleMedicine();
+  if (movementTask()) {
+    setAdvertisedMoving(isMoving());
+    setAdvertisedStationary(isStationary());
     bleDirty = true;
     displayDirty = true;
-    Serial.printf("[%lu] MED changed: %s\n", millis(), getMedicineName().c_str());
-  }
-
-  if (M5.BtnB.wasPressed()) {
-    Serial.println("=== STATUS ===");
-    drawSerial();
   }
 
   if (bleDirty) updateAdvertising();
