@@ -8,28 +8,13 @@
 
 static BLEAdvertising* adv = nullptr;
 
+static uint16_t advSeq = 0;
+
 static float advertisedTemperature = 25.00f;
 static uint8_t advertisedBatteryPercent = 0;
 
 static bool advertisedMoving = false;
 static bool advertisedStationary = true;
-
-void setAdvertisedTemperature(float temperature) {
-  advertisedTemperature = temperature;
-}
-
-void setAdvertisedBatteryPercent(uint8_t percent) {
-  if (percent > 100) percent = 100;
-  advertisedBatteryPercent = percent;
-}
-
-void setAdvertisedMoving(bool moving) {
-  advertisedMoving = moving;
-}
-
-void setAdvertisedStationary(bool stationary) {
-  advertisedStationary = stationary;
-}
 
 /*
 Manufacturer Data Layout:
@@ -39,10 +24,11 @@ Byte 8-19  : Medicine name (12 bytes, ASCII, space padded, truncated if >12)
 Byte 20-21 : Temperature (2 bytes, signed int16, 0.01°C, big-endian hi,lo)
 Byte 22    : Battery (1 byte)
 Byte 23    : Movement flags (1 byte, bit 0 only, where 1 = moving and 0 = not moving)
+Byte 24-25 : Sequence number (2 bytes, big-endian)
 */
 static std::string buildMfgData(const String& med, float temp, uint8_t battPct, bool moving) {
   std::string s;
-  s.reserve(24);
+  s.reserve(26);
 
   s.push_back((char)0xFF);
   s.push_back((char)0xFF);
@@ -69,6 +55,10 @@ static std::string buildMfgData(const String& med, float temp, uint8_t battPct, 
   if (moving) flags |= 0x01; // bit0 = moving
   s.push_back((char)flags);
 
+  uint16_t seq = advSeq++;
+  s.push_back((char)((seq >> 8) & 0xFF));
+  s.push_back((char)(seq & 0xFF));
+
   return s;
 }
 
@@ -90,7 +80,7 @@ void updateAdvertising() {
   BLEAdvertisementData sd;
   sd.setManufacturerData(buildMfgData(getMedicineName(), 
                                       advertisedTemperature, 
-                                      advertisedBatteryPercent,
+                                      advertisedBatteryPercent, 
                                       advertisedMoving));
 
   adv->stop();
@@ -101,6 +91,8 @@ void updateAdvertising() {
   adv->setAdvertisementData(ad);
   adv->setScanResponseData(sd);
   adv->start();
+
+  Serial.printf("[%lu] ADV updated, Seq=%u\n", millis(), getLastSentSeq());
 }
 
 void initBLE() {
@@ -111,4 +103,26 @@ void initBLE() {
   applyAdaptiveInterval();
 
   updateAdvertising();
+}
+
+void setAdvertisedTemperature(float temperature) {
+  advertisedTemperature = temperature;
+}
+
+void setAdvertisedBatteryPercent(uint8_t percent) {
+  if (percent > 100) percent = 100;
+  advertisedBatteryPercent = percent;
+}
+
+void setAdvertisedMoving(bool moving) {
+  advertisedMoving = moving;
+}
+
+void setAdvertisedStationary(bool stationary) {
+  advertisedStationary = stationary;
+}
+
+uint16_t getLastSentSeq() {
+  if (advSeq == 0) return 0;
+  return advSeq - 1;
 }

@@ -17,3 +17,7 @@ void setAdvertisedBatteryPercent(uint8_t percent);
 // movement-related (used for status flags + adaptive interval)
 void setAdvertisedMoving(bool moving);
 void setAdvertisedStationary(bool stationary);
+
+// get the last sent advertising sequence number
+uint16_t getLastSentSeq();
+

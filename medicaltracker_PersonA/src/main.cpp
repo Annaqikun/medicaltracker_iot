@@ -27,6 +27,7 @@ void drawSerial() {
   Serial.printf("Temp(C): %.2f\n", getTemperature());
   Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
   Serial.printf("Move: %s  |a|=%.2fg\n", isMoving() ? "MOVING" : (isStationary() ? "STATIONARY" : "IDLE"), getAccelMagnitude());
+  Serial.printf("Seq: %u\n", getLastSentSeq());
 }
 
 void setup() {
