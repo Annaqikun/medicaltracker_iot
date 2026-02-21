@@ -114,11 +114,10 @@ class MQTTPublisher:
             'rssi': rssi,
             'temperature': parsed_data['temperature'],
             'battery': parsed_data['battery'],
-            'status_flags': parsed_data['status_flags_raw'],
-            'status': parsed_data['status'],
+            'medicine': parsed_data['medicine'],
             'sequence_number': parsed_data['sequence_number'],
-            'device_name': parsed_data['device_name']
         }
+
 
         # Publish with QoS 1 
         result = self.client.publish(
@@ -128,7 +127,7 @@ class MQTTPublisher:
         )
 
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            print(f"Published: {parsed_data['device_name']} ({mac}) | RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}°C | Battery: {parsed_data['battery']}% | Seq: {parsed_data['sequence_number']}")
+            print(f"Published: {parsed_data['medicine']} ({mac}) | RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}°C | Battery: {parsed_data['battery']}% | Seq: {parsed_data['sequence_number']}")
             return True
         else:
             print(f"Publish failed for {mac}: {result.rc}")
@@ -195,18 +194,21 @@ async def scan_and_publish():
         mac  = device.address.upper()
         device_name = device.name if device.name else "Unknown"
         rssi = advertisement_data.rssi
+        COMPANY_ID = 0xFFFF
 
         is_known_tag = mac in [tag.upper() for tag in KNOWN_MEDICINE_TAGS]
 
         if PUBLISH_ONLY_KNOWN_TAGS and not is_known_tag:
             return
 
-        if device_name and device_name.startswith("MT"):
-            parsed_data = parser.parse_device_name(device_name,mac)
+        if device_name == "MED_TAG":
+            mfg_bytes = advertisement_data.manufacturer_data.get(COMPANY_ID)
+            if mfg_bytes:
+                parsed_data = parser.parse_manufacturer(mfg_bytes, mac)
 
-            if parsed_data:
-                publisher.publish_scan(mac,rssi,parsed_data)
-                publisher.publish_rssi(mac,rssi)
+                if parsed_data:
+                    publisher.publish_scan(mac,rssi,parsed_data)
+                    publisher.publish_rssi(mac,rssi)
 
     scanner = BleakScanner(callback, scanning_mode="active")
 

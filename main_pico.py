@@ -68,8 +68,8 @@ except Exception as e:
 # Setup BLE
 ble = bluetooth.BLE()
 ble.active(True)
-last_device_name = None
-last_parsed_data = None
+# last_device_name = None
+# last_parsed_data = None
 scan_count = 0
 
 def parse_device_name(name, mac):
@@ -115,10 +115,8 @@ def publish_scan(mac, rssi, parsed_data):
         'rssi': rssi,
         'temperature': parsed_data['temperature'],
         'battery': parsed_data['battery'],
-        'status_flags': parsed_data['status_flags_raw'],
-        'status': parsed_data['status'],
         'sequence_number': parsed_data['sequence_number'],
-        'device_name': parsed_data['device_name']
+        'medicine': parsed_data['medicine'],
     }
     
     try:
@@ -128,11 +126,42 @@ def publish_scan(mac, rssi, parsed_data):
             qos=1
         )
         scan_count += 1
-        print(f"Scan {scan_count}: {parsed_data['device_name']} ({mac}) | RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}°C | Bat: {parsed_data['battery']}%")
+        print(f"Scan {scan_count}: {parsed_data['medicine']} ({mac}) | RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}°C | Bat: {parsed_data['battery']}%")
         return True
     except Exception as e:
         print(f"Publish failed: {e}")
         return False
+
+def parse_mfg_data(adv_data):
+    data = bytes(adv_data)
+    i = 0
+    while i < len(data):
+        length = data[i]
+        if length == 0:
+            break
+        ad_type = data[i + 1]
+        if ad_type == 0xFF:
+            payload = data[i + 2: i + 1 +length]
+            if len(payload) >= 23:
+                medicine = payload[2 + 6 : 2+6+12].decode('ascii',errors = 'ignore').strip()
+                temp_hi = payload[20]
+                temp_lo = payload[21]
+                temp_raw = (temp_hi << 8) | temp_lo
+                if temp_raw > 32767:
+                    temp_raw -= 65536
+                temperature = round(temp_raw/100.0,2)
+                battery = payload[22]
+                moving = bool(payload[23] & 0x01) if len(payload) >=24 else False
+                sequence_number = ((payload[24] << 8) | payload[25]) if len(payload) >= 26 else 0
+                return{
+                    'medicine': medicine,
+                    'temperature': temperature,
+                    'battery': battery,
+                    'moving': moving,
+                    'sequence_number': sequence_number
+                }
+        i += 1 + length
+    return None
 
 
 
@@ -202,7 +231,6 @@ def parse_adv_name(adv_data):
 
 def irq(event, data):
     """BLE interrupt handler"""
-    global last_device_name, last_parsed_data
     
     if event == _IRQ_SCAN_RESULT:
         addr_type, addr, adv_type, rssi, adv_data = data
@@ -211,24 +239,11 @@ def irq(event, data):
         # Check if this is our target M5StickC
         if mac.upper() == TAG_MAC:
             # Parse device name from advertisement
-            device_name = parse_adv_name(adv_data)
+            parsed = parse_mfg_data(adv_data)
+            if parsed:
+                publish_scan(mac,rssi, parsed)
+                publish_rssi(mac, rssi)
             
-            if device_name and device_name.startswith("MT"):
-                # Parse the device name
-                parsed_data = parse_device_name(device_name, mac)
-                
-                if parsed_data:
-                    # Only publish if data changed 
-                    if device_name != last_device_name:
-                        last_device_name = device_name
-                        last_parsed_data = parsed_data
-                        publish_scan(mac, rssi, parsed_data)
-                        publish_rssi(mac, rssi)
-                    # Uncomment below to publish all data (debugging)
-                    # publish_scan(mac, rssi, parsed_data)
-            else:
-                # Device name not available yet, just report RSSI
-                print(f"Found tag! MAC: {mac} | RSSI: {rssi} | adv_type: {adv_type} (waiting for name...)")
     
     elif event == _IRQ_SCAN_DONE:
         ble.gap_scan(0, 60000, 30000, True)

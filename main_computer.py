@@ -87,10 +87,8 @@ class MessageDeduplicator:
             'rssi': data['rssi'],
             'temperature': data['temperature'],
             'battery': data['battery'],
-            'status_flags': data['status_flags'],
-            'status': data['status'],
+            'medicine': data['medicine'],
             'sequence_number': data['sequence_number'],
-            'device_name': data['device_name']
         }
 
         try:
