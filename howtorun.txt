@@ -25,4 +25,14 @@ mosquitto_sub -h localhost -t "hospital/system/#" -v
 
 
 
+# Copy file to RPi (run on your PC)
+scp ble-scanner.service pi@192.168.1.x:/home/pi/
 
+# SSH into RPi, then:
+sudo mv /home/pi/ble-scanner.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable ble-scanner   # auto-start on boot
+sudo systemctl start ble-scanner    # start now
+
+# Check it's running:
+sudo systemctl status ble-scanner
