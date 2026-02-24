@@ -1,6 +1,14 @@
 cd "C:\Program Files\mosquitto"
 mosquitto -c mosquitto.conf -v
 
+
+# Subscribe over TLS using your CA cert
+mosquitto_sub -h localhost -p 8883 \
+  --cafile /etc/mosquitto/ca.crt \
+  -u dashboard -P 1234 \
+  -t "hospital/#" -v
+
+
 # See all scan data
 mosquitto_sub -h localhost -t "hospital/medicine/scan/#" -v
 

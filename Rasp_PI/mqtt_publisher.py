@@ -12,13 +12,13 @@ import psutil
 
 
 # MQTT Settings
-MQTT_BROKER = "192.168.1.9"
+MQTT_BROKER = "10.132.40.168"
 MQTT_PORT = 1883
 MQTT_QOS = 1
-MQTT_USERNAME = "rpi4_zone_a"
+MQTT_USERNAME = "rpi_a"
 MQTT_PASSWORD = "1234"
 
-RECEIVER_ID = "rpi4_zone_a"
+RECEIVER_ID = "rpi_a"
 
 KNOWN_MEDICINE_TAGS = [
     "4C:75:25:CB:7E:0A",
