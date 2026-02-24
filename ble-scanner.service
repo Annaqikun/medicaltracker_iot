@@ -1,0 +1,16 @@
+[Unit]
+Description=BLE Medicine Tag Scanner
+# Wait for network before starting
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/project
+ExecStart=/home/pi/project/myenv/bin/python mqtt_publisher.py
+# Restart automatically if it crashes
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

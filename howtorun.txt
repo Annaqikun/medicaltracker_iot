@@ -1,0 +1,46 @@
+cd "C:\Program Files\mosquitto"
+mosquitto -c mosquitto.conf -v
+
+
+# Subscribe over TLS using your CA cert
+mosquitto_sub -h localhost -p 8883 \
+  --cafile /etc/mosquitto/ca.crt \
+  -u dashboard -P 1234 \
+  -t "hospital/#" -v
+
+
+# See all scan data
+mosquitto_sub -h localhost -t "hospital/medicine/scan/#" -v
+
+# See RSSI-only data
+mosquitto_sub -h localhost -t "hospital/medicine/rssi_only/#" -v
+
+# See deduplicated data from main_computer
+mosquitto_sub -h localhost -t "hospital/medicine/rssi/#" -v
+
+# See everything in the hospital topic tree
+mosquitto_sub -h localhost -t "hospital/#" -v
+
+
+# Pico heartbeat
+mosquitto_sub -h localhost -t "hospital/system/pico_status/#" -v
+
+# RPi heartbeat
+mosquitto_sub -h localhost -t "hospital/system/rpi_status/#" -v
+
+# All heartbeats at once
+mosquitto_sub -h localhost -t "hospital/system/#" -v
+
+
+
+# Copy file to RPi (run on your PC)
+scp ble-scanner.service pi@192.168.1.x:/home/pi/
+
+# SSH into RPi, then:
+sudo mv /home/pi/ble-scanner.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable ble-scanner   # auto-start on boot
+sudo systemctl start ble-scanner    # start now
+
+# Check it's running:
+sudo systemctl status ble-scanner
