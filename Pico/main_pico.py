@@ -7,7 +7,6 @@ from umqtt.simple import MQTTClient
 from micropython import const
 
 
-
 PICO_ID = 2  # Change to 2 for second Pico
 TAG_MAC = "4C:75:25:CB:7E:0A"
 
