@@ -1,0 +1,3 @@
+# MQTT client library for Python
+# Required for connecting to Mosquitto broker
+paho-mqtt>=1.6.0
