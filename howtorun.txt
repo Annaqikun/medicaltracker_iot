@@ -1,3 +1,62 @@
+# =============================================================================
+# TLS CERTIFICATE SETUP (run once on the main computer)
+# =============================================================================
+
+# 1. Generate CA
+openssl genrsa -out ca.key 2048
+openssl req -new -x509 -days 1826 -key ca.key -subj "/CN=MedicalTrackerCA" -out ca.crt
+
+# 2. Generate server key + CSR with IP SAN (replace IP with broker IP)
+openssl genrsa -out server.key 2048
+openssl req -new -key server.key -subj "/CN=172.20.10.4" -addext "subjectAltName=IP:172.20.10.4" -out server.csr
+
+# 3. Sign the server cert (copies SAN from CSR)
+openssl x509 -req -days 1826 -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -copy_extensions copy -out server.crt
+
+# 4. Verify SAN is present (should show: IP Address:172.20.10.4)
+openssl x509 -in server.crt -text -noout | grep -A1 "Subject Alternative"
+
+# 5. Copy certs to Mosquitto
+sudo cp ca.crt /etc/mosquitto/ca.crt
+sudo cp server.crt /etc/mosquitto/server.crt
+sudo cp server.key /etc/mosquitto/server.key
+sudo chown mosquitto:mosquitto /etc/mosquitto/ca.crt /etc/mosquitto/server.crt /etc/mosquitto/server.key
+sudo chmod 644 /etc/mosquitto/ca.crt /etc/mosquitto/server.crt
+sudo chmod 640 /etc/mosquitto/server.key
+
+# 6. Create TLS config for Mosquitto
+sudo nano /etc/mosquitto/conf.d/tls.conf
+# Paste the following into the file:
+#   allow_anonymous false
+#   password_file /etc/mosquitto/passwordfile
+#   acl_file /etc/mosquitto/acl
+#   listener 8883 0.0.0.0
+#   protocol mqtt
+#   cafile /etc/mosquitto/ca.crt
+#   certfile /etc/mosquitto/server.crt
+#   keyfile /etc/mosquitto/server.key
+#   tls_version tlsv1.2
+
+# 7. Allow port 8883 through firewall
+sudo ufw allow 8883
+sudo ufw reload
+
+# 8. Start Mosquitto
+sudo systemctl enable mosquitto
+sudo systemctl restart mosquitto
+sudo ss -tlnp | grep 8883   # should show port 8883 listening
+
+# 9. Copy ca.crt to RPi (run on main computer)
+scp ca.crt pi@<RPI_IP>:/home/pi/ca.crt
+# Then on the RPi:
+sudo cp /home/pi/ca.crt /etc/mosquitto/ca.crt
+
+# 10. Upload ca.crt to Pico via Thonny (drag to / on the Pico filesystem)
+
+# =============================================================================
+# START BROKER (main computer)
+# =============================================================================
+
 cd "C:\Program Files\mosquitto"
 mosquitto -c mosquitto.conf -v
 

@@ -2,8 +2,10 @@ import bluetooth
 import time
 import network
 import json
+import ssl
 from umqtt.simple import MQTTClient
 from micropython import const
+
 
 
 PICO_ID = 2  # Change to 2 for second Pico
@@ -14,7 +16,7 @@ WIFI_SSID = "SINGTEL-7988"
 WIFI_PASSWORD = "gPwRxmhaWrD3"   
 
 MQTT_BROKER = "192.168.1.9"
-MQTT_PORT = 1883
+MQTT_PORT = 8883
 MQTT_CLIENT_ID = f"pico_{PICO_ID}"
 
 
@@ -56,7 +58,13 @@ try:
         port=MQTT_PORT,
         keepalive=60,
         user = "pico_2",
-        password = "1234"
+        password = "1234",
+        ssl=True,
+        ssl_params ={
+            "server_side":False,
+            "server_hostname":MQTT_BROKER,
+            "cadata": open("/ca.crt","rb").read(),
+        }
     )
     mqtt_client.connect()
     print("Connected to MQTT broker")
