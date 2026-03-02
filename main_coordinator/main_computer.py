@@ -5,7 +5,7 @@ from datetime import datetime
 import threading
 
 
-MQTT_BROKER = "172.20.10.4"
+MQTT_BROKER = "192.168.0.9"
 MQTT_PORT = 1883
 MQTT_QOS = 1
 
