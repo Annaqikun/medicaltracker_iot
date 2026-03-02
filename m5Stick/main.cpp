@@ -18,7 +18,11 @@ void drawM5Screen() {
   M5.Display.printf("MED:%s\n", getMedicineName().c_str());
   M5.Display.printf("T:%.2fC\n", getTemperature());
   M5.Display.printf("B:%u%%\n", getBatteryPercent());
-  M5.Display.printf("Move:%s\n", isMoving() ? "MOVING" : (isStationary() ? "STATIONARY" : "IDLE"));
+  M5.Display.printf("Move:%s\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY");
+  M5.Display.setTextSize(2);
+  M5.Display.println(" /\\_/\\ ");
+  M5.Display.println("( o.o )");
+  M5.Display.println(" > ^ < ");
 }
 
 void drawSerial() {
@@ -26,7 +30,7 @@ void drawSerial() {
   Serial.printf("MED: %s\n", getMedicineName().c_str());
   Serial.printf("Temp(C): %.2f\n", getTemperature());
   Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
-  Serial.printf("Move: %s  |a|=%.2fg\n", isMoving() ? "MOVING" : (isStationary() ? "STATIONARY" : "IDLE"), getAccelMagnitude());
+  Serial.printf("Move: %s  |a|=%.2fg\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY", getAccelMagnitude());
   Serial.printf("Seq: %u\n", getLastSentSeq());
 }
 
@@ -43,8 +47,8 @@ void setup() {
 
   setAdvertisedTemperature(getTemperature());
   setAdvertisedBatteryPercent(getBatteryPercent());
-  setAdvertisedMoving(isMoving());
-  setAdvertisedStationary(isStationary());
+  setAdvertisedMoving(isCurrentlyMoving());
+  setAdvertisedStationary(isCurrentlyStationary());
 
   initBLE();
 
@@ -85,8 +89,8 @@ void loop() {
   }
 
   if (movementTask()) {
-    setAdvertisedMoving(isMoving());
-    setAdvertisedStationary(isStationary());
+    setAdvertisedMoving(isCurrentlyMoving());
+    setAdvertisedStationary(isCurrentlyStationary());
     bleDirty = true;
     displayDirty = true;
   }
