@@ -2,18 +2,18 @@
 
 #include <Arduino.h>
 
-// Initialize motion detection + initial state (uses the built-in MPU6886 on M5StickC Plus)
+// Initialize motion detection (uses built-in MPU6886 IMU on M5StickC Plus)
 void initMovement();
 
-// Call frequently; internally rate-limited.
-// Returns true when moving/stationary state changes.
+// Call frequently in loop; internally rate-limited to every 100ms
+// Returns true only when moving/stationary state CHANGES (for UI/BLE updates)
 bool movementTask();
 
-// True if we detected "movement" recently (|a| > threshold).
-bool isMoving();
+// True if movement detected within grace period (10s)
+bool isCurrentlyMoving();
 
-// True if we detected no movement for the stationary timeout.
-bool isStationary();
+// True if no movement for grace period (10s)
+bool isCurrentlyStationary();
 
-// Latest acceleration magnitude in g (for debugging/UI)
+// Latest acceleration magnitude in g (for debugging/display)
 float getAccelMagnitude();
