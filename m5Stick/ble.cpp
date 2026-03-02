@@ -64,13 +64,24 @@ static std::string buildMfgData(const String& med, float temp, uint8_t battPct, 
 
 static void applyAdaptiveInterval() {
   // BLE interval units are 0.625ms
-  // 500ms  -> 800 units
-  // 5000ms -> 8000 units
-  uint16_t interval = advertisedStationary ? 8000 : 800;
-
+  // Tune these based on your needs:
+  // - Faster = better tracking but drains battery
+  // - Slower = saves battery but less responsive
+  
+  uint16_t interval;
+  if (advertisedStationary) {
+    interval = 8000;  // 5000ms (5 seconds) - save battery when still
+  } else {
+    // MOVING - choose your speed:
+    interval = 1600;  // 1000ms (1 second) - balanced
+    // interval = 800;   // 500ms (0.5 seconds) - real-time but drains fast
+    // interval = 3200;  // 2000ms (2 seconds) - battery saver
+  }
+  
   adv->setMinInterval(interval);
   adv->setMaxInterval(interval);
 }
+
 
 void updateAdvertising() {
   BLEAdvertisementData ad;
