@@ -9,16 +9,17 @@ from bleak import BleakScanner
 import paho.mqtt.client as mqtt
 from m5stick_parser import M5StickCNameParser
 import psutil
+import ssl
 
 
 # MQTT Settings
 MQTT_BROKER = "192.168.88.5"
 MQTT_PORT = 1883
 MQTT_QOS = 1
-MQTT_USERNAME = "rpi4_zone_a"
+MQTT_USERNAME = "rpi_a"
 MQTT_PASSWORD = "1234"
 
-RECEIVER_ID = "rpi4_zone_a"
+RECEIVER_ID = "rpi_a"
 
 KNOWN_MEDICINE_TAGS = [
     "4C:75:25:CB:7E:0A",
@@ -63,7 +64,7 @@ class MQTTPublisher:
         self.port = port
         self.receiver_id = receiver_id
         self.client = mqtt.Client(client_id=f"{receiver_id}_{int(time.time())}")
-
+        self.client.tls_set(ca_certs="/etc/mosquitto/ca.crt", tls_version=ssl.PROTOCOL_TLS_CLIENT)
         if username and password:
             self.client.username_pw_set(username, password)
 

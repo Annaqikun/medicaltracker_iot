@@ -3,6 +3,7 @@ import json
 import time
 from datetime import datetime
 import threading
+import ssl
 
 
 MQTT_BROKER = "192.168.88.5"
@@ -16,7 +17,7 @@ class MessageDeduplicator:
         self.port = port
         self.client = mqtt.Client(client_id="coordinator")
         self.client.username_pw_set("coordinator","1234")
-
+        self.client.tls_set(ca_certs="/etc/mosquitto/ca.crt", tls_version=ssl.PROTOCOL_TLS_CLIENT)
         # Track last seen sequence number per MAC address
         self.last_seq = {}
         self.seq_lock = threading.Lock()
