@@ -1,0 +1,92 @@
+MOSQUITTO TLS SETUP ON RAK7268V2 (WisGate Edge Lite 2)
+=======================================================
+
+PREREQUISITES
+-------------
+- SSH access to router: ssh root@192.168.88.5 any ipaddress currently it is 
+- TLS certs already in /etc/mosquitto/certs/ (ca.crt, server.crt, server.key)
+- Mosquitto already running on port 1883 with password auth
+
+
+STEP 1 — Verify certs are on the router
+----------------------------------------
+ssh root@192.168.88.5
+ls /etc/mosquitto/certs/
+# Should show: ca.crt  server.crt  server.key
+
+
+STEP 2 — Add TLS listener on port 8883 via UCI
+------------------------------------------------
+uci add mosquitto listener
+uci set mosquitto.@listener[1].port=8883
+uci set mosquitto.@listener[1].binder_address=0.0.0.0
+uci set mosquitto.@listener[1].cafile=/etc/mosquitto/certs/ca.crt
+uci set mosquitto.@listener[1].certfile=/etc/mosquitto/certs/server.crt
+uci set mosquitto.@listener[1].keyfile=/etc/mosquitto/certs/server.key
+uci commit mosquitto
+
+
+STEP 3 — Restart Mosquitto
+----------------------------
+/etc/init.d/mosquitto restart
+
+
+STEP 4 — Verify generated config
+----------------------------------
+cat /tmp/mosquitto.generated.conf
+
+Expected output:
+  allow_anonymous false
+  password_file /etc/mosquitto/passwordfile
+
+  listener 1883
+
+  listener 8883
+  cafile /etc/mosquitto/certs/ca.crt
+  certfile /etc/mosquitto/certs/server.crt
+  keyfile /etc/mosquitto/certs/server.key
+
+
+STEP 5 — Test TLS connection (run from PC)
+-------------------------------------------
+mosquitto_pub -h 192.168.88.5 -p 8883 --cafile ca.crt -u coordinator -P 1234 -t test/hello -m "world"
+
+# If no error = TLS is working
+
+
+NOTES
+-----
+- Port 1883 = plain MQTT with password auth (still active)
+- Port 8883 = MQTT over TLS with password auth
+- IMPORTANT: Do NOT edit /etc/mosquitto/mosquitto.conf directly.
+  The router generates its config from UCI settings to /tmp/mosquitto.generated.conf.
+  Always use "uci set mosquitto.*" commands to make changes.
+- To view all current UCI mosquitto settings: uci show mosquitto
+
+
+IF CERTS ARE NOT ON THE ROUTER YET
+------------------------------------
+Transfer from PC using SSH pipe (SCP does not work on this router):
+
+  ssh root@192.168.88.5 "mkdir -p /etc/mosquitto/certs"
+  ssh root@192.168.88.5 "cat > /etc/mosquitto/certs/ca.crt" < ca.crt
+  ssh root@192.168.88.5 "cat > /etc/mosquitto/certs/server.crt" < server.crt
+  ssh root@192.168.88.5 "cat > /etc/mosquitto/certs/server.key" < server.key
+
+
+PASSWORD FILE SETUP (if not done yet)
+---------------------------------------
+mosquitto_passwd -c /etc/mosquitto/passwordfile coordinator
+# type: 1234
+mosquitto_passwd /etc/mosquitto/passwordfile pico_1
+# type: 1234
+mosquitto_passwd /etc/mosquitto/passwordfile pico_2
+# type: 1234
+mosquitto_passwd /etc/mosquitto/passwordfile rpi4_zone_a
+# type: 1234
+
+uci set mosquitto.mosquitto.allow_anonymous=0
+uci set mosquitto.mosquitto.use_password_file=1
+uci set mosquitto.mosquitto.password_file=/etc/mosquitto/passwordfile
+uci commit mosquitto
+/etc/init.d/mosquitto restart
