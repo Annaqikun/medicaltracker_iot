@@ -7,7 +7,7 @@
 // DAT -> G32
 // VCC -> 3V3
 // GND -> GND
-#define DHTPIN 32
+#define DHTPIN 26
 #define DHTTYPE DHT22
 
 static DHT dht(DHTPIN, DHTTYPE);
