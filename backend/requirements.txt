@@ -1,0 +1,23 @@
+# Medical Tracker IoT Backend Dependencies
+
+# Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# MQTT Client
+paho-mqtt>=1.6.1
+
+# InfluxDB Client
+influxdb-client>=1.38.0
+
+# Configuration Management
+python-dotenv>=1.0.0
+
+# Type Hints
+typing-extensions>=4.8.0
+
+# HTTP Client (for potential external API calls)
+httpx>=0.25.0
+
+# CORS Middleware
+python-multipart>=0.0.6
