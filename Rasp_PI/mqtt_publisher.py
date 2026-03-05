@@ -13,10 +13,10 @@ import ssl
 
 
 # MQTT Settings
-MQTT_BROKER = "10.132.40.168"
+MQTT_BROKER = "YOUR IP"
 MQTT_PORT = 8883
 MQTT_QOS = 1
-MQTT_USERNAME = "rpi_a"
+MQTT_USERNAME = "rpi"
 MQTT_PASSWORD = "1234"
 
 RECEIVER_ID = "rpi_a"
@@ -139,6 +139,7 @@ class MQTTPublisher:
             'battery': parsed_data['battery'],
             'medicine': parsed_data['medicine'],
             'sequence_number': parsed_data['sequence_number'],
+            'moving': parsed_data.get('moving', False),
         }
 
         result = self.client.publish(topic, json.dumps(payload), qos=MQTT_QOS)
