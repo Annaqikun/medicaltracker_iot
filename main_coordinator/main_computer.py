@@ -15,8 +15,8 @@ from datetime import datetime
 import threading
 import ssl
 
-MQTT_BROKER = "192.168.0.9"
-MQTT_PORT = 8883
+MQTT_BROKER = "192.168.137.1"
+MQTT_PORT = 1883
 MQTT_QOS = 1
 
 
@@ -26,8 +26,7 @@ class MessageDeduplicator:
         self.broker = broker
         self.port = port
         self.client = mqtt.Client(client_id="coordinator")
-        self.client.username_pw_set("coordinator","134")
-        self.client.tls_set(ca_certs="ca.crt", tls_version=ssl.PROTOCOL_TLS_CLIENT)
+        self.client.username_pw_set("coordinator","1234")
         # Track last seen sequence number per MAC address
         self.last_seq = {}
         self.seq_lock = threading.Lock()

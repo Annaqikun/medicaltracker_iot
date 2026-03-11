@@ -13,7 +13,7 @@ import ssl
 
 
 # MQTT Settings
-MQTT_BROKER = "YOUR IP"
+MQTT_BROKER = "192.168.137.1"
 MQTT_PORT = 8883
 MQTT_QOS = 1
 MQTT_USERNAME = "rpi"
@@ -64,10 +64,8 @@ class MQTTPublisher:
         self.port = port
         self.receiver_id = receiver_id
         self.client = mqtt.Client(client_id=f"{receiver_id}_{int(time.time())}")
-        self.client.tls_set(ca_certs="/etc/mosquitto/ca.crt", tls_version=ssl.PROTOCOL_TLS_CLIENT)
         if username and password:
             self.client.username_pw_set(username, password)
-
         # Connection resilience: auto-reconnect after 1s, up to 30s backoff
         self.client.reconnect_delay_set(min_delay=1, max_delay=30)
 
