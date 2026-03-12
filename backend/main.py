@@ -9,11 +9,14 @@ import ssl
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import paho.mqtt.client as mqtt
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from database import Database
@@ -31,6 +34,7 @@ db: Optional[Database] = None
 medicine_tracker: Optional[MedicineTracker] = None
 mqtt_client: Optional[mqtt.Client] = None
 mqtt_thread: Optional[threading.Thread] = None
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
 def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
@@ -179,6 +183,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if FRONTEND_DIR.exists():
+    app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
+
 
 @app.get("/")
 async def root() -> Dict[str, Any]:
@@ -193,11 +200,22 @@ async def root() -> Dict[str, Any]:
         "status": "running",
         "endpoints": [
             "/",
+            "/dashboard",
             "/api/medicines",
             "/api/medicine/{mac}/history",
-            "/api/alerts"
+            "/api/alerts",
+            "/api/status"
         ]
     }
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard() -> FileResponse:
+    """Serve the monitoring dashboard."""
+    if not FRONTEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Frontend not found")
+
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.get("/api/medicines")

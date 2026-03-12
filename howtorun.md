@@ -177,6 +177,39 @@ mpremote reset
 ### 5. Power on M5StickC
 Already flashed with `m5_stick_code.cpp` via Arduino IDE. Just plug in.
 
+### 6. Start the FastAPI backend and open the dashboard
+From the `backend` folder:
+
+```powershell
+cd <project_folder>\backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn main:app --reload
+```
+
+Open the dashboard in a browser:
+
+```text
+http://127.0.0.1:8000/dashboard
+```
+
+The dashboard reads from these backend routes:
+
+- `GET /api/medicines`
+- `GET /api/alerts`
+- `GET /api/status`
+
+### 7. Seed sample InfluxDB data for frontend testing
+If InfluxDB is running but empty, you can populate sample medicine and alert data without touching the backend logic:
+
+```powershell
+cd <project_folder>\database
+python seed_influxdb.py
+```
+
+The script reads InfluxDB settings from `backend/.env` when available and writes sample records into the configured bucket.
+
 ---
 
 ## Verifying the System

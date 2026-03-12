@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medical Tracker Dashboard</title>
+    <link rel="stylesheet" href="/frontend/styles.css">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="topbar">
+            <div>
+                <p class="eyebrow">Hospital Monitoring Console</p>
+                <h1>Medical Tracker Dashboard</h1>
+            </div>
+            <div class="status-strip">
+                <div class="status-chip">
+                    <span class="label">API</span>
+                    <strong id="api-status">Connecting</strong>
+                </div>
+                <div class="status-chip">
+                    <span class="label">MQTT</span>
+                    <strong id="mqtt-status">Checking</strong>
+                </div>
+                <div class="status-chip wide">
+                    <span class="label">Last refresh</span>
+                    <strong id="last-updated">Waiting for data</strong>
+                </div>
+            </div>
+        </header>
+
+        <main class="dashboard-grid">
+            <section class="panel tag-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="panel-kicker">Inventory</p>
+                        <h2>Medicine Tags</h2>
+                    </div>
+                    <span class="count-pill" id="tag-count">0 tags</span>
+                </div>
+                <div class="tag-list" id="tag-list">
+                    <article class="empty-state">
+                        <h3>No tag data yet</h3>
+                        <p>Waiting for medicine telemetry from the backend.</p>
+                    </article>
+                </div>
+            </section>
+
+            <section class="panel map-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="panel-kicker">Location</p>
+                        <h2>Ward Floor Map</h2>
+                    </div>
+                    <span class="map-caption">Placeholder image with live overlays</span>
+                </div>
+                <div class="map-stage">
+                    <img src="/frontend/assets/floor-map-placeholder.svg" alt="Placeholder hospital floor map" class="floor-map-image">
+                    <div class="map-overlay" id="map-overlay"></div>
+                </div>
+                <div class="map-legend">
+                    <span><i class="legend-dot stable"></i> Stable</span>
+                    <span><i class="legend-dot moving"></i> Moving</span>
+                    <span><i class="legend-dot warning"></i> Needs attention</span>
+                </div>
+            </section>
+
+            <section class="panel alerts-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="panel-kicker">Events</p>
+                        <h2>Alert Feed</h2>
+                    </div>
+                    <span class="count-pill" id="alert-count">0 alerts</span>
+                </div>
+                <div class="alerts-list" id="alerts-list">
+                    <article class="empty-state">
+                        <h3>No alerts yet</h3>
+                        <p>Recent alert records from InfluxDB will appear here.</p>
+                    </article>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <template id="tag-card-template">
+        <article class="tag-card">
+            <div class="tag-card-head">
+                <div>
+                    <h3 class="tag-name"></h3>
+                    <p class="tag-mac"></p>
+                </div>
+                <span class="status-badge"></span>
+            </div>
+            <dl class="tag-metrics">
+                <div>
+                    <dt>Battery</dt>
+                    <dd class="battery"></dd>
+                </div>
+                <div>
+                    <dt>Temperature</dt>
+                    <dd class="temperature"></dd>
+                </div>
+                <div>
+                    <dt>Receiver</dt>
+                    <dd class="receiver"></dd>
+                </div>
+                <div>
+                    <dt>Updated</dt>
+                    <dd class="updated"></dd>
+                </div>
+            </dl>
+        </article>
+    </template>
+
+    <template id="alert-item-template">
+        <article class="alert-item">
+            <div class="alert-item-head">
+                <span class="alert-severity"></span>
+                <time class="alert-time"></time>
+            </div>
+            <h3 class="alert-title"></h3>
+            <p class="alert-message"></p>
+        </article>
+    </template>
+
+    <script src="/frontend/app.js" defer></script>
+</body>
+</html>

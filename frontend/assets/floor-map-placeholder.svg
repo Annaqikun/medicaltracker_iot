@@ -1,0 +1,26 @@
+<svg width="1200" height="900" viewBox="0 0 1200 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="900" fill="#EDF3F6"/>
+  <rect x="40" y="40" width="1120" height="820" rx="28" fill="#F8FAF3" stroke="#9CB4B5" stroke-width="8"/>
+  <rect x="90" y="110" width="330" height="210" rx="22" fill="#DDEFEA" stroke="#89AAA8" stroke-width="6"/>
+  <rect x="455" y="110" width="280" height="210" rx="22" fill="#E9E3D2" stroke="#B3A184" stroke-width="6"/>
+  <rect x="770" y="110" width="340" height="210" rx="22" fill="#D9E6F4" stroke="#8EA6C4" stroke-width="6"/>
+  <rect x="90" y="375" width="220" height="390" rx="22" fill="#F1E8E2" stroke="#C6A993" stroke-width="6"/>
+  <rect x="345" y="375" width="430" height="390" rx="22" fill="#E3F0EA" stroke="#90ADA6" stroke-width="6"/>
+  <rect x="810" y="375" width="300" height="390" rx="22" fill="#F0EAF6" stroke="#AA9BC2" stroke-width="6"/>
+  <path d="M420 355H790" stroke="#6A8B8E" stroke-width="16" stroke-linecap="round" stroke-dasharray="2 28"/>
+  <path d="M330 570H810" stroke="#6A8B8E" stroke-width="16" stroke-linecap="round" stroke-dasharray="2 28"/>
+  <circle cx="355" cy="215" r="18" fill="#0E6B65" fill-opacity="0.2"/>
+  <circle cx="696" cy="239" r="18" fill="#B25F18" fill-opacity="0.2"/>
+  <circle cx="989" cy="243" r="18" fill="#0F6CBD" fill-opacity="0.2"/>
+  <text x="120" y="180" fill="#12343B" font-size="34" font-family="Georgia, serif">Cold Storage</text>
+  <text x="120" y="224" fill="#5C7477" font-size="20" font-family="Trebuchet MS, sans-serif">Refrigerated medication zone</text>
+  <text x="485" y="180" fill="#12343B" font-size="34" font-family="Georgia, serif">Nurse Prep</text>
+  <text x="485" y="224" fill="#5C7477" font-size="20" font-family="Trebuchet MS, sans-serif">Staging and handling</text>
+  <text x="805" y="180" fill="#12343B" font-size="34" font-family="Georgia, serif">ICU Ward</text>
+  <text x="805" y="224" fill="#5C7477" font-size="20" font-family="Trebuchet MS, sans-serif">High priority medication area</text>
+  <text x="120" y="455" fill="#12343B" font-size="32" font-family="Georgia, serif">Storage A</text>
+  <text x="375" y="455" fill="#12343B" font-size="32" font-family="Georgia, serif">Main Corridor</text>
+  <text x="835" y="455" fill="#12343B" font-size="32" font-family="Georgia, serif">Pharmacy</text>
+  <text x="385" y="520" fill="#5C7477" font-size="22" font-family="Trebuchet MS, sans-serif">Live tag markers are visual placeholders until trilaterated coordinates are exposed.</text>
+  <text x="86" y="840" fill="#5C7477" font-size="22" font-family="Trebuchet MS, sans-serif">Placeholder ward plan for dashboard layout validation</text>
+</svg>

@@ -291,7 +291,9 @@ class Database:
             |> filter(fn: (r) => r._measurement == "medicine_status")
             |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
             |> group(columns: ["mac"])
-            |> last()
+            |> sort(columns: ["_time"], desc: true)
+            |> limit(n: 1)
+            |> group()
             |> limit(n: {limit})
         '''
 
