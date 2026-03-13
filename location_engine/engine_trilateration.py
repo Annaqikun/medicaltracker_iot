@@ -163,14 +163,14 @@ def weighted_centroid(receivers):
     return wx / total_w, wy / total_w
 
 
-def localize(receivers):
+def localize_trilateration(receivers):
     """
-    Localization pipeline with heron_localize() as primary. Takes (x, y, distance) tuples.
+    Localization pipeline with trilateration as primary. Takes (x, y, distance) tuples.
 
     With 3+ receivers:
-      1. heron_localize()                            confidence=high
-      2. If that fails → is_valid_triangle check → trilaterate() confidence=medium
-      3. Both fail     → weighted_centroid()         confidence=medium
+      1. is_valid_triangle check → trilaterate()    confidence=high
+      2. If invalid/fails        → heron_localize() confidence=medium
+      3. Both fail               → weighted_centroid() confidence=medium
 
     With <3 receivers:
       → weighted_centroid() confidence=low
@@ -178,10 +178,6 @@ def localize(receivers):
     Returns {"x": float, "y": float, "method": str, "confidence": str} or None.
     """
     if len(receivers) >= 3:
-        pos = heron_localize(receivers)
-        if pos:
-            return {"x": pos[0], "y": pos[1], "method": "heron", "confidence": "high"}
-
         distances = [d for _, _, d in receivers]
         geometry_valid = any(
             is_valid_triangle(d1, d2, d3)
@@ -190,7 +186,11 @@ def localize(receivers):
         if geometry_valid:
             pos = trilaterate(receivers)
             if pos:
-                return {"x": pos[0], "y": pos[1], "method": "trilateration", "confidence": "medium"}
+                return {"x": pos[0], "y": pos[1], "method": "trilateration", "confidence": "high"}
+
+        pos = heron_localize(receivers)
+        if pos:
+            return {"x": pos[0], "y": pos[1], "method": "heron", "confidence": "medium"}
 
     pos = weighted_centroid(receivers)
     if pos is None:
