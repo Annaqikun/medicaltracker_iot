@@ -1,12 +1,14 @@
+#include <Arduino.h>
+#include <M5Unified.h>
 #include "ble.h"
 #include "mac.h"
 #include "med.h"
 #include "temp.h"
 #include "battery.h"
 #include "movement.h"
+#include "wifi_manager.h"
 
-#include <Arduino.h>
-#include <M5Unified.h>
+static const char* TAG_ID = "m5tag01";  // change this for each device
 
 void drawM5Screen() {
   M5.Display.clearDisplay();
@@ -19,10 +21,8 @@ void drawM5Screen() {
   M5.Display.printf("T:%.2fC\n", getTemperature());
   M5.Display.printf("B:%u%%\n", getBatteryPercent());
   M5.Display.printf("Move:%s\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY");
-  M5.Display.setTextSize(2);
-  M5.Display.println(" /\\_/\\ ");
-  M5.Display.println("( o.o )");
-  M5.Display.println(" > ^ < ");
+  M5.Display.printf("WiFi:%s\n", isWifiConnected() ? "ON" : "OFF");
+  M5.Display.printf("MQTT:%s\n", isMqttConnected() ? "ON" : "OFF");
 }
 
 void drawSerial() {
@@ -32,6 +32,9 @@ void drawSerial() {
   Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
   Serial.printf("Move: %s  |a|=%.2fg\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY", getAccelMagnitude());
   Serial.printf("Seq: %u\n", getLastSentSeq());
+  Serial.printf("WiFi session: %s\n", isWifiSessionActive() ? "ACTIVE" : "INACTIVE");
+  Serial.printf("WiFi link: %s\n", isWifiConnected() ? "CONNECTED" : "DISCONNECTED");
+  Serial.printf("MQTT: %s\n", isMqttConnected() ? "CONNECTED" : "DISCONNECTED");
 }
 
 void setup() {
@@ -52,9 +55,13 @@ void setup() {
 
   initBLE();
 
+  initWifiModule(TAG_ID);
+
   drawM5Screen();
 
   Serial.println("Advertising started");
+  Serial.println("BtnA = change medicine");
+  Serial.println("BtnB = start 30s Wi-Fi/MQTT session");
   drawSerial();
 }
 
@@ -64,6 +71,9 @@ void loop() {
   bool bleDirty = false;
   bool displayDirty = false;
 
+  // Always run Wi-Fi/MQTT state machine
+  wifiTask();
+
   if (M5.BtnA.wasPressed()) {
     toggleMedicine();
     bleDirty = true;
@@ -71,9 +81,15 @@ void loop() {
     Serial.printf("[%lu] MED changed: %s\n", millis(), getMedicineName().c_str());
   }
 
+  //if (M5.BtnB.wasPressed()) {
+    //Serial.println("=== STATUS ===");
+    //drawSerial();
+  //}
+
   if (M5.BtnB.wasPressed()) {
-    Serial.println("=== STATUS ===");
-    drawSerial();
+    Serial.println("=== START WIFI SESSION ===");
+    startWifiSession(WifiSessionReason::Manual);
+    displayDirty = true;
   }
 
   if (tempTask()) {
