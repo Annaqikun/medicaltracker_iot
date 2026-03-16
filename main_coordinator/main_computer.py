@@ -1,3 +1,13 @@
+"""
+Simple MQTT Deduplicator - Experimental Version
+
+This is a lightweight alternative to the full backend/ for:
+- Testing new algorithms without InfluxDB complexity
+- Learning MQTT deduplication concepts
+- Quick prototyping
+
+For production use, see backend/ (FastAPI + InfluxDB + Trilateration)
+"""
 import paho.mqtt.client as mqtt
 import json
 import time
@@ -5,8 +15,8 @@ from datetime import datetime
 import threading
 import ssl
 
-MQTT_BROKER = "172.20.10.4"
-MQTT_PORT = 8883
+MQTT_BROKER = "192.168.137.1"
+MQTT_PORT = 1883
 MQTT_QOS = 1
 
 
@@ -17,7 +27,6 @@ class MessageDeduplicator:
         self.port = port
         self.client = mqtt.Client(client_id="coordinator")
         self.client.username_pw_set("coordinator","1234")
-        self.client.tls_set(ca_certs="/etc/mosquitto/ca.crt", tls_version=ssl.PROTOCOL_TLS_CLIENT)
         # Track last seen sequence number per MAC address
         self.last_seq = {}
         self.seq_lock = threading.Lock()

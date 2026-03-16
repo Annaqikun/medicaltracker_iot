@@ -11,8 +11,8 @@ PICO_ID = 2  # Change to 2 for second Pico
 TAG_MAC = "4C:75:25:CB:7E:0A"
 
 # WiFi Configuration
-WIFI_SSID = "SINGTEL-7988"      
-WIFI_PASSWORD = "gPwRxmhaWrD3"   
+WIFI_SSID = "azrylaptop"      
+WIFI_PASSWORD = "azryhome1234"   
 
 MQTT_BROKER = "192.168.1.9"
 MQTT_PORT = 8883
