@@ -4,8 +4,9 @@
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <M5Unified.h>
-#include <time.h>
-#include <sys/time.h>
+#include "temp.h"
+#include "battery.h"
+#include "timeSync.h"
 
 extern const uint8_t certs_ca_crt_start[] asm("_binary_certs_ca_crt_start");  
 extern const uint8_t certs_ca_crt_end[]   asm("_binary_certs_ca_crt_end");  // not used as of now
@@ -20,9 +21,6 @@ static const char* MQTT_PASSWORD = "password000";  // change this for each M5Sti
 static const unsigned long WIFI_SESSION_DURATION_MS = 30000;
 static const unsigned long WIFI_RETRY_INTERVAL_MS = 3000;
 static const unsigned long MQTT_RETRY_INTERVAL_MS = 3000;
-
-static const long NTP_GMT_OFFSET_SECONDS = 8 * 3600;  // Singapore
-static const int  NTP_DAYLIGHT_OFFSET_SECONDS = 0;
 
 static String currentTagId;
 
@@ -53,9 +51,20 @@ static const char* reasonToString(WifiSessionReason reason) {
     }
 }
 
-// PAYLOAD HELPER
+// PAYLOAD HELPERS
 static String makePayload(const char* id, const char* key, const char* value) {
     return "{\"id\":\"" + String(id) + "\",\"" + String(key) + "\":\"" + String(value) + "\"}";
+}
+
+static String makeStatusPayload(const char* statusText) {
+    String payload = "{";
+    payload += "\"id\":\"" + currentTagId + "\",";
+    payload += "\"status\":\"" + String(statusText) + "\",";
+    payload += "\"temp_c\":" + String(getTemperature(), 2) + ",";
+    payload += "\"battery_percent\":" + String(getBatteryPercent());
+    payload += "}";
+
+    return payload;
 }
 
 // TOPIC HELPERS
@@ -69,27 +78,6 @@ static String getCommandTopic() {
 
 static String getAckTopic() {
     return "hospital/medicine/ack/" + currentTagId;
-}
-
-static bool syncTimeWithNtp() {
-    Serial.println("[TIME] Syncing time with NTP...");
-    configTime(NTP_GMT_OFFSET_SECONDS, NTP_DAYLIGHT_OFFSET_SECONDS, "pool.ntp.org", "time.nist.gov");
-
-    struct tm timeinfo;
-    for (int i = 0; i < 20; ++i) {
-        if (getLocalTime(&timeinfo, 500)) {
-            char buf[64];
-            strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
-            Serial.printf("[TIME] Time synced: %s\n", buf);
-            return true;
-        }
-        Serial.print(".");
-        delay(500);
-    }
-
-    Serial.println();
-    Serial.println("[TIME] NTP sync failed");
-    return false;
 }
 
 // MQTT CALLBACK
@@ -168,14 +156,20 @@ static void connectMqttIfNeeded() {
         Serial.println("[MQTT] Connected");
 
         bool ok = mqttClient.subscribe(getCommandTopic().c_str());
-        Serial.printf("[MQTT] Subscribe to %s => %s\n",
-                      getCommandTopic().c_str(),
-                      ok ? "OK" : "FAILED");
+        Serial.printf("[MQTT] Subscribe to %s => %s\n", getCommandTopic().c_str(), ok ? "OK" : "FAILED");
+        
+        const char* statusText;
+        if (currentSessionReason == WifiSessionReason::LostBle) {
+            statusText = "lost_ble";
+        } else {
+            statusText = "wifi_mqtt_connected";
+        }
 
-        String bootPayload = makePayload(currentTagId.c_str(), "status", "wifi_mqtt_connected");
-        mqttClient.publish(getEmergencyTopic().c_str(), bootPayload.c_str());
+        String mqttPayload =  makeStatusPayload(statusText);
+        bool yup = mqttClient.publish(getEmergencyTopic().c_str(), mqttPayload.c_str());
 
-        Serial.println("[MQTT] Published connection status");
+        Serial.printf("[MQTT] Published status payload => %s\n", yup ? "OK" : "FAILED");
+        Serial.printf("[MQTT] Payload: %s\n", mqttPayload.c_str());
     } else {
         Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
     }
@@ -253,6 +247,7 @@ void stopWifiSession() {
 
     WiFi.mode(WIFI_OFF);
     wifiSessionActive = false;
+    currentSessionReason = WifiSessionReason::None;
 
     Serial.println("[WiFiModule] Returned to BLE-only mode");
 }
@@ -263,8 +258,8 @@ bool publishEmergencyStatus(const String& message) {
         return false;
     }
 
-    String payload = makePayload(currentTagId.c_str(), "message", message.c_str());
-    bool ok = mqttClient.publish(getEmergencyTopic().c_str(), payload.c_str());
+    String emergencypayload = makePayload(currentTagId.c_str(), "message", message.c_str());
+    bool ok = mqttClient.publish(getEmergencyTopic().c_str(), emergencypayload.c_str());
 
     Serial.printf("[MQTT] Publish emergency => %s\n", ok ? "OK" : "FAILED");
     return ok;
@@ -280,4 +275,8 @@ bool isWifiConnected() {
 
 bool isMqttConnected() {
     return mqttClient.connected();
+}
+
+WifiSessionReason getCurrentWifiSessionReason() {
+    return currentSessionReason;
 }

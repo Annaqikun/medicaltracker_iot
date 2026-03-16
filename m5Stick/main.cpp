@@ -7,6 +7,7 @@
 #include "battery.h"
 #include "movement.h"
 #include "wifi_manager.h"
+#include "ble_ack.h"
 
 static const char* TAG_ID = "m5tag01";  // change this for each device
 
@@ -57,11 +58,11 @@ void setup() {
 
   initWifiModule(TAG_ID);
 
+  initBleAckTracker();
+
   drawM5Screen();
 
   Serial.println("Advertising started");
-  Serial.println("BtnA = change medicine");
-  Serial.println("BtnB = start 30s Wi-Fi/MQTT session");
   drawSerial();
 }
 
@@ -71,20 +72,12 @@ void loop() {
   bool bleDirty = false;
   bool displayDirty = false;
 
-  // Always run Wi-Fi/MQTT state machine
   wifiTask();
 
   if (M5.BtnA.wasPressed()) {
-    toggleMedicine();
-    bleDirty = true;
-    displayDirty = true;
-    Serial.printf("[%lu] MED changed: %s\n", millis(), getMedicineName().c_str());
+    Serial.println("[MAIN] Manual BLE ack test");
+    recordBleAck();
   }
-
-  //if (M5.BtnB.wasPressed()) {
-    //Serial.println("=== STATUS ===");
-    //drawSerial();
-  //}
 
   if (M5.BtnB.wasPressed()) {
     Serial.println("=== START WIFI SESSION ===");
@@ -109,6 +102,11 @@ void loop() {
     setAdvertisedStationary(isCurrentlyStationary());
     bleDirty = true;
     displayDirty = true;
+  }
+
+  if (!isWifiSessionActive() && shouldTriggerLostBleFailover()) {
+    Serial.println("[MAIN] Lost BLE detected -> start Wi-Fi failover");
+    startWifiSession(WifiSessionReason::LostBle);
   }
 
   if (bleDirty) updateAdvertising();

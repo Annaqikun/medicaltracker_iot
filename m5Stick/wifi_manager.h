@@ -29,3 +29,5 @@ bool publishEmergencyStatus(const String& message);
 bool isWifiSessionActive();
 bool isWifiConnected();
 bool isMqttConnected();
+
+WifiSessionReason getCurrentWifiSessionReason();
