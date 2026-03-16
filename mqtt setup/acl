@@ -1,11 +1,8 @@
 # RPi Zone A
 user rpi
-topic write hospital/medicine/scan/rpi
+topic write hospital/medicine/scan/#
 topic write hospital/medicine/rssi_only/#
-topic write hospital/system/rpi_status/rpi
-
-
-
+topic write hospital/system/rpi_status/#
 
 # RPi4 - can publish scans, RSSI, and heartbeats
 user rpi4_zone_a
@@ -27,10 +24,11 @@ topic write hospital/system/pico_status/pico_2
 
 # Coordinator (main_computer) - can read scans, publish deduplicated data and status
 user coordinator
-topic read hospital/medicine/scan/#
+topic read hospital/#
 topic write hospital/medicine/rssi/#
 topic write hospital/system/coordinator_status
 
 # Dashboard - read only access to everything
 user dashboard
 topic read hospital/#
+
