@@ -34,7 +34,7 @@ db: Optional[Database] = None
 medicine_tracker: Optional[MedicineTracker] = None
 mqtt_client: Optional[mqtt.Client] = None
 mqtt_thread: Optional[threading.Thread] = None
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend-react" / "dist"
 
 
 def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
@@ -184,7 +184,7 @@ app.add_middleware(
 )
 
 if FRONTEND_DIR.exists():
-    app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="assets")
 
 
 @app.get("/")
