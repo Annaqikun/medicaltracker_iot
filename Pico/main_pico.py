@@ -117,15 +117,16 @@ def publish_scan(mac, rssi, parsed_data):
     
     payload = {
         'receiver_id': f"pico_{PICO_ID}",
-        'timestamp': f"{time.time()}", 
+        'timestamp': f"{time.time()}",
         'mac': mac,
         'rssi': rssi,
         'temperature': parsed_data['temperature'],
         'battery': parsed_data['battery'],
         'sequence_number': parsed_data['sequence_number'],
-        'medicine': parsed_data['medicine'],
+        'moving': parsed_data.get('moving', False),
+        'hmac': parsed_data['hmac'],
     }
-    
+
     try:
         mqtt_client.publish(
             topic.encode(),
@@ -133,7 +134,7 @@ def publish_scan(mac, rssi, parsed_data):
             qos=1
         )
         scan_count += 1
-        print(f"Scan {scan_count}: {parsed_data['medicine']} ({mac}) | RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}°C | Bat: {parsed_data['battery']}%")
+        print(f"Scan {scan_count}: ({mac}) | RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}C | Bat: {parsed_data['battery']}% | HMAC: {parsed_data['hmac']}")
         return True
     except Exception as e:
         print(f"Publish failed: {e}")
@@ -148,24 +149,32 @@ def parse_mfg_data(adv_data):
             break
         ad_type = data[i + 1]
         if ad_type == 0xFF:
-            payload = data[i + 2: i + 1 +length]
-            if len(payload) >= 23:
-                medicine = payload[2 + 6 : 2+6+12].decode('ascii',errors = 'ignore').strip()
-                temp_hi = payload[20]
-                temp_lo = payload[21]
+            # Strip the 2-byte company ID; mfg_bytes starts after it
+            mfg_bytes = data[i + 2: i + 1 + length]
+            if len(mfg_bytes) >= 2 + 16:
+                payload = mfg_bytes[2:]  # skip company ID bytes
+                # payload[0:6]   = MAC (6 bytes)
+                # payload[6:8]   = Temperature (2 bytes, big-endian, signed int16)
+                # payload[8]     = Battery
+                # payload[9]     = Movement flag
+                # payload[10:12] = Sequence number (2 bytes, big-endian)
+                # payload[12:16] = Truncated HMAC (4 bytes)
+                temp_hi = payload[6]
+                temp_lo = payload[7]
                 temp_raw = (temp_hi << 8) | temp_lo
                 if temp_raw > 32767:
                     temp_raw -= 65536
-                temperature = round(temp_raw/100.0,2)
-                battery = payload[22]
-                moving = bool(payload[23] & 0x01) if len(payload) >=24 else False
-                sequence_number = ((payload[24] << 8) | payload[25]) if len(payload) >= 26 else 0
-                return{
-                    'medicine': medicine,
+                temperature = round(temp_raw / 100.0, 2)
+                battery = payload[8]
+                moving = bool(payload[9] & 0x01)
+                sequence_number = (payload[10] << 8) | payload[11]
+                hmac = ''.join(['{:02x}'.format(b) for b in payload[12:16]])
+                return {
                     'temperature': temperature,
                     'battery': battery,
                     'moving': moving,
-                    'sequence_number': sequence_number
+                    'sequence_number': sequence_number,
+                    'hmac': hmac,
                 }
         i += 1 + length
     return None

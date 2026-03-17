@@ -25,7 +25,7 @@ KNOWN_MEDICINE_TAGS = [
     "4C:75:25:CB:7E:0A",
 ]
 
-PUBLISH_ONLY_KNOWN_TAGS = False
+PUBLISH_ONLY_KNOWN_TAGS = True
 COMPANY_ID = 0xFFFF
 
 # --- Logging setup ---
@@ -135,18 +135,19 @@ class MQTTPublisher:
             'rssi': rssi,
             'temperature': parsed_data['temperature'],
             'battery': parsed_data['battery'],
-            'medicine': parsed_data['medicine'],
             'sequence_number': parsed_data['sequence_number'],
             'moving': parsed_data.get('moving', False),
+            'hmac': parsed_data['hmac'],
         }
 
         result = self.client.publish(topic, json.dumps(payload), qos=MQTT_QOS)
 
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
             logger.info(
-                f"SCAN | {parsed_data['medicine']} | MAC: {mac} | "
+                f"SCAN | MAC: {mac} | "
                 f"RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}C | "
-                f"Bat: {parsed_data['battery']}% | Seq: {parsed_data['sequence_number']}"
+                f"Bat: {parsed_data['battery']}% | Seq: {parsed_data['sequence_number']} | "
+                f"HMAC: {parsed_data['hmac']}"
             )
             return True
         else:
