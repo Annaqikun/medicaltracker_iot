@@ -14,7 +14,7 @@ import ssl
 
 # MQTT Settings
 MQTT_BROKER = "192.168.137.1"
-MQTT_PORT = 8883
+MQTT_PORT = 1883
 MQTT_QOS = 1
 MQTT_USERNAME = "rpi"
 MQTT_PASSWORD = "1234"
@@ -113,7 +113,7 @@ class MQTTPublisher:
             self.client.connect(self.broker, self.port, keepalive=60)
             self.client.loop_start()
 
-            timeout = 5
+            timeout = 15
             while not self.connected and timeout > 0:
                 time.sleep(0.1)
                 timeout -= 0.1
@@ -127,7 +127,6 @@ class MQTTPublisher:
 
     def publish_scan(self, mac: str, rssi: int, parsed_data: dict):
         topic = f"hospital/medicine/scan/{self.receiver_id}"
-
         payload = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'receiver_id': self.receiver_id,

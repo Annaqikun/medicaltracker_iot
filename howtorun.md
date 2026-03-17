@@ -190,7 +190,7 @@ mosquitto_sub -h localhost -p 1883 -u <USER> -P <PASSWORD> -t "hospital/#" -v
 mosquitto_sub -h localhost -p 1883 -u <USER> -P <PASSWORD> -t "hospital/medicine/scan/#" -v
 
 # RSSI only
-mosquitto_sub -h localhost -p 1883 -u <USER> -P <PASSWORD> -t "hospital/medicine/rssi_only/#" -v
+mosquitto_sub -h localhost -p 1883 -u coordinator -P 1234 -t "hospital/medicine/rssi_only/#" -v
 
 # Heartbeats
 mosquitto_sub -h localhost -p 1883 -u <USER> -P <PASSWORD> -t "hospital/system/#" -v
@@ -203,6 +203,53 @@ mosquitto_pub -h localhost -p 1883 -u dashboard -P <PASSWORD> -t "hospital/medic
 
 ---
 
+## Automating the RPi with a systemd Service
+
+Instead of manually running `mqtt_publisher.py`, you can install it as a systemd service so it starts automatically on boot and restarts on failure.
+
+Two files are provided in `Rasp_PI/`:
+- `mqtt_publisher.service` — systemd unit file
+- `install_service.sh` — one-shot setup script
+
+### 1. Transfer files to the RPi
+
+From your Windows machine (project root):
+
+```powershell
+scp Rasp_PI/mqtt_publisher.py Rasp_PI/m5stick_parser.py Rasp_PI/mqtt_publisher.service Rasp_PI/install_service.sh pi@<RPI_IP>:~/
+```
+
+### 2. Run the installer on the RPi
+
+```bash
+ssh pi@<RPI_IP>
+# Fix Windows line endings (CRLF → LF) — required if files were created on Windows
+sed -i 's/\r//' install_service.sh mqtt_publisher.service
+chmod +x install_service.sh
+sudo ./install_service.sh
+```
+
+> **If you see `cannot execute: required file not found`**, the script has Windows line endings. Run the `sed` command above to fix it.
+
+The script will:
+1. Copy scripts to `/home/pi/iot_project/`
+2. Create a Python venv and install `bleak`, `paho-mqtt`, `psutil`
+3. Install and enable the service (auto-starts on every boot)
+4. Start it immediately
+
+### 3. Managing the service
+
+```bash
+sudo systemctl status mqtt_publisher      # check status
+sudo systemctl restart mqtt_publisher     # restart after config changes
+sudo systemctl stop mqtt_publisher        # stop
+sudo journalctl -u mqtt_publisher -f      # follow live logs
+```
+
+> The service waits for `network-online.target` before starting and auto-restarts on failure (`Restart=on-failure`).
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -212,3 +259,4 @@ mosquitto_pub -h localhost -p 1883 -u dashboard -P <PASSWORD> -t "hospital/medic
 | Pico WiFi not connecting | Check SSID/password, move closer to router, reset Pico |
 | No data from Pico in deduplicator | RPi may be reporting same sequence first (dedup working correctly) |
 | M5StickC draining battery fast | Reduce display brightness, increase broadcast interval |
+| `cannot execute: required file not found` on Pi | Windows line endings — run `sed -i 's/\r//' install_service.sh mqtt_publisher.service` then retry |
