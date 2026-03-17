@@ -1,6 +1,6 @@
 #include "ble.h"
 #include "mac.h"
-#include "med.h"
+#include "hmac.h"
 #include "temp.h"
 #include "battery.h"
 #include "movement.h"
@@ -15,7 +15,6 @@ void drawM5Screen() {
 
   M5.Display.println("BLE ADV OK");
   M5.Display.printf("MAC:\n%s\n", getMacString().c_str());
-  M5.Display.printf("MED:%s\n", getMedicineName().c_str());
   M5.Display.printf("T:%.2fC\n", getTemperature());
   M5.Display.printf("B:%u%%\n", getBatteryPercent());
   M5.Display.printf("Move:%s\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY");
@@ -27,7 +26,6 @@ void drawM5Screen() {
 
 void drawSerial() {
   Serial.printf("MAC: %s\n", getMacString().c_str());
-  Serial.printf("MED: %s\n", getMedicineName().c_str());
   Serial.printf("Temp(C): %.2f\n", getTemperature());
   Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
   Serial.printf("Move: %s  |a|=%.2fg\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY", getAccelMagnitude());
@@ -39,7 +37,15 @@ void setup() {
   M5.begin(cfg);
 
   Serial.begin(115200);
-  delay(3000);
+  delay(1000);
+
+  // Check if the provisioning script is talking to us over serial.
+  // If it sends "PROV_PING", we enter provisioning mode, receive the
+  // key, write it to NVS, and reboot. Otherwise we continue normally.
+  checkSerialProvisioning();
+
+  // Load HMAC key from NVS — halts if not found
+  hmacInit();
 
   initTemp();
   initBattery();
@@ -63,13 +69,6 @@ void loop() {
 
   bool bleDirty = false;
   bool displayDirty = false;
-
-  if (M5.BtnA.wasPressed()) {
-    toggleMedicine();
-    bleDirty = true;
-    displayDirty = true;
-    Serial.printf("[%lu] MED changed: %s\n", millis(), getMedicineName().c_str());
-  }
 
   if (M5.BtnB.wasPressed()) {
     Serial.println("=== STATUS ===");
@@ -97,6 +96,6 @@ void loop() {
 
   if (bleDirty) updateAdvertising();
   if (displayDirty) drawM5Screen();
-  
+
   delay(10);
 }
