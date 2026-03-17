@@ -11,6 +11,8 @@ echo "=== MQTT Publisher Service Installer ==="
 
 echo "[1/5] Creating project directory at $PROJECT_DIR..."
 mkdir -p "$PROJECT_DIR"
+mkdir -p "$PROJECT_DIR/certs"
+chown "$CURRENT_USER:$CURRENT_USER" "$PROJECT_DIR/certs"
 
 echo "[2/5] Copying scripts..."
 cp mqtt_publisher.py "$PROJECT_DIR/"

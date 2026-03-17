@@ -1,12 +1,22 @@
 #include "ble.h"
 #include "mac.h"
 #include "med.h"
+#include "ble_ack.h"
 
 #include <BLEDevice.h>
 #include <BLEAdvertising.h>
 #include <math.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
 static BLEAdvertising* adv = nullptr;
+static BLEServer* ackServer = nullptr;
+static BLEService* ackService = nullptr;
+static BLECharacteristic* ackCharacteristic = nullptr;
+
+static const char* ACK_SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
+static const char* ACK_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdef";
 
 static uint16_t advSeq = 0;
 
@@ -62,6 +72,33 @@ static std::string buildMfgData(const String& med, float temp, uint8_t battPct, 
   return s;
 }
 
+class AckCharacteristicCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    std::string value = characteristic->getValue();
+
+    Serial.println("[BLE ACK] GATT write received");
+
+    if (value.empty()) {
+      Serial.println("[BLE ACK] Empty payload ignored");
+      return;
+    }
+
+    Serial.print("[BLE ACK] Raw bytes: ");
+    for (size_t i = 0; i < value.size(); i++) {
+      Serial.printf("%02X ", (uint8_t)value[i]);
+    }
+    Serial.println();
+
+    Serial.printf("[BLE ACK] Payload as text: %s\n", value.c_str());
+
+    if (value == "ack") {
+      recordBleAck();
+    } else {
+      Serial.println("[BLE ACK] Invalid payload ignored");
+    }
+  }
+};
+
 static void applyAdaptiveInterval() {
   // BLE interval units are 0.625ms
   // Tune these based on your needs:
@@ -82,6 +119,34 @@ static void applyAdaptiveInterval() {
   adv->setMaxInterval(interval);
 }
 
+class AckServerCallbacks: public BLEServerCallbacks{
+  void onDisconnect(BLEServer* server) override{
+    Serial.println("[BLE ACK] Client disconnected, restarting advertising");
+    BLEDevice::getAdvertising()->start();
+  }
+};
+
+
+static void setupAckGattServer() {
+  ackServer = BLEDevice::createServer();
+  ackServer ->setCallbacks(new AckServerCallbacks());
+
+  ackService = ackServer->createService(ACK_SERVICE_UUID);
+
+  ackCharacteristic = ackService->createCharacteristic(
+      ACK_CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_WRITE
+  );
+
+  ackCharacteristic->setCallbacks(new AckCharacteristicCallbacks());
+  ackCharacteristic->setValue("waiting");
+
+  ackService->start();
+
+  Serial.println("[BLE ACK] GATT service started");
+  Serial.printf("[BLE ACK] Service UUID: %s\n", ACK_SERVICE_UUID);
+  Serial.printf("[BLE ACK] Characteristic UUID: %s\n", ACK_CHARACTERISTIC_UUID);
+}
 
 void updateAdvertising() {
   BLEAdvertisementData ad;
@@ -108,6 +173,9 @@ void updateAdvertising() {
 
 void initBLE() {
   BLEDevice::init("MED_TAG");
+
+  setupAckGattServer();
+
   adv = BLEDevice::getAdvertising();
 
   // Set initial interval based on current motion state

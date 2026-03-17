@@ -5,11 +5,12 @@ import logging
 from collections import deque
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from bleak import BleakScanner
+from bleak import BleakScanner, BleakClient
 import paho.mqtt.client as mqtt
 from m5stick_parser import M5StickCNameParser
 import psutil
 import ssl
+import os
 
 
 # MQTT Settings
@@ -54,6 +55,9 @@ def smooth_rssi(mac: str, rssi: int) -> int:
 
 
 parser = M5StickCNameParser()
+ACK_SERVICE_UUID        = "12345678-1234-1234-1234-1234567890ab"
+ACK_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdef"
+
 
 
 class MQTTPublisher:
@@ -110,9 +114,9 @@ class MQTTPublisher:
     def connect(self):
         try:
             logger.info(f"Connecting to MQTT broker at {self.broker}:{self.port}...")
+            self.client.tls_set(ca_certs=os.path.expanduser("~/iot_project/certs/ca.crt"))
             self.client.connect(self.broker, self.port, keepalive=60)
             self.client.loop_start()
-
             timeout = 15
             while not self.connected and timeout > 0:
                 time.sleep(0.1)
@@ -170,6 +174,16 @@ class MQTTPublisher:
         self.client.loop_stop()
         self.client.disconnect()
 
+async def send_ble_ack(mac:str):
+    try:
+        async with BleakClient(mac,timeout = 15.0) as client:
+            await client.write_gatt_char(ACK_CHARACTERISTIC_UUID,
+                                         b"ack"
+                                         )
+            logger.info(f"[ACK] Sent to {mac}")
+    except Exception as e:
+        print(f"[ACK] Failed to send to {mac}: {e}")
+
 
 async def scan_and_publish():
     logger.info("=" * 60)
@@ -189,7 +203,7 @@ async def scan_and_publish():
         return
 
     logger.info("Scanning for MED_TAG devices...")
-
+    loop = asyncio.get_event_loop()
     def callback(device, advertisement_data):
         mac = device.address.upper()
         device_name = device.name if device.name else "Unknown"
@@ -206,8 +220,9 @@ async def scan_and_publish():
                 if parsed_data:
                     # Smooth RSSI before publishing
                     smoothed = smooth_rssi(mac, raw_rssi)
-                    publisher.publish_scan(mac, smoothed, parsed_data)
-                    publisher.publish_rssi(mac, smoothed)
+                    if publisher.publish_scan(mac, smoothed, parsed_data):
+                        publisher.publish_rssi(mac, smoothed)
+                        asyncio.run_coroutine_threadsafe(send_ble_ack(mac),loop)
 
     scanner = BleakScanner(callback, scanning_mode="active")
     await scanner.start()

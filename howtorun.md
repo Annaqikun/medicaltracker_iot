@@ -19,124 +19,83 @@ M5StickC (BLE Beacon) --> Pico W / RPi4 (BLE Scanner) --> Mosquitto (MQTT Broker
 | `hospital/medicine/scan/{receiver_id}` | Full scan data (temp, battery, RSSI, seq) | Pico / RPi |
 | `hospital/medicine/rssi_only/{mac}` | RSSI-only lightweight data | Pico / RPi |
 | `hospital/medicine/rssi/{receiver_id}/{mac}` | Deduplicated data | Main computer |
+| `hospital/medicine/emergency/{tag_id}` | M5Stick emergency (lost BLE, temp alert) | M5Stick |
+| `hospital/medicine/command/{tag_id}` | Commands to M5Stick (e.g. "find") | Coordinator |
+| `hospital/medicine/ack/{tag_id}` | M5Stick acknowledgements | M5Stick |
 | `hospital/system/pico_status/pico_{id}` | Pico heartbeat | Pico |
 | `hospital/system/rpi_status/{receiver_id}` | RPi heartbeat | RPi |
 | `hospital/system/coordinator_status` | Coordinator heartbeat | Main computer |
 
 ---
 
-## Step 1: Generate TLS Certificates
+## Step 1: Run the Automated TLS Setup Script
 
-From the project folder:
+The setup scripts generate TLS certificates, create MQTT users, configure ACL, and update `mosquitto.conf` automatically.
 
+### Windows (PowerShell as Administrator)
 ```powershell
-cd "<project_folder>"
-
-# Generate CA
-openssl req -x509 -newkey rsa:4096 -keyout ca.key -out ca.crt -days 365 -nodes -subj "/CN=MosquittoCA"
-
-# Generate server key + CSR
-openssl req -newkey rsa:4096 -keyout server.key -out server.csr -nodes -subj "/CN=<BROKER_IP>"
-
-# Sign server cert with CA
-openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 365
+powershell -ExecutionPolicy Bypass -File setup_mosquitto_tls.ps1
 ```
 
-## Step 2: Create MQTT Users
+### Mac/Linux
+```bash
+chmod +x setup_mosquitto_tls.sh && ./setup_mosquitto_tls.sh
+```
 
-From the Mosquitto install directory (run as Administrator):
+The script will prompt for:
+- **Broker IP** (default: `192.168.137.1` — your hotspot IP)
+- **RPi MQTT username/password** (default: `rpi` / `1234`)
+- **Extra users** (enter `coordinator,dashboard` and set passwords for each)
 
+The script creates:
+| File | Purpose |
+|------|---------|
+| `password.txt` | MQTT user credentials (hashed) |
+| `acl.txt` | Topic access control per user |
+| `certs/ca.crt` | CA certificate (copy to RPi + M5Stick) |
+| `certs/server.crt` | Server certificate |
+| `certs/server.key` | Server private key |
+| `certs/openssl_tls12.cnf` | Forces TLS 1.2 (required for ESP32) |
+
+### Add M5Stick Tag User (after running the script)
+
+All M5Sticks share one `m5tag` account:
 ```powershell
-cd "C:\Program Files\mosquitto"
-
-# First user (-c creates the file, prompts for password)
-mosquitto_passwd -c passwordfile rpi4_zone_a
-
-# Additional users (-b appends, password inline)
-mosquitto_passwd -b passwordfile pico_1 <PASSWORD>
-mosquitto_passwd -b passwordfile pico_2 <PASSWORD>
-mosquitto_passwd -b passwordfile coordinator <PASSWORD>
-mosquitto_passwd -b passwordfile dashboard <PASSWORD>
+& "C:\Program Files\mosquitto\mosquitto_passwd.exe" -b password.txt m5tag password000
 ```
 
-## Step 3: Create ACL File
-
-Create an `acl` file in the project folder:
-
-```
-# RPi4
-user rpi4_zone_a
-topic write hospital/medicine/scan/rpi4_zone_a
-topic write hospital/medicine/rssi_only/#
-topic write hospital/system/rpi_status/rpi4_zone_a
-
-# Pico 1
-user pico_1
-topic write hospital/medicine/scan/pico_1
-topic write hospital/medicine/rssi_only/#
-topic write hospital/system/pico_status/pico_1
-
-# Pico 2
-user pico_2
-topic write hospital/medicine/scan/pico_2
-topic write hospital/medicine/rssi_only/#
-topic write hospital/system/pico_status/pico_2
-
-# Coordinator (main_computer)
-user coordinator
-topic read hospital/medicine/scan/#
-topic write hospital/medicine/rssi/#
-topic write hospital/system/coordinator_status
-
-# Dashboard - read only
-user dashboard
-topic read hospital/#
-```
-
-## Step 4: Configure Mosquitto
-
-Replace the top of `C:\Program Files\mosquitto\mosquitto.conf`:
-
-```
-# Non-TLS listener (port 1883)
-listener 1883 0.0.0.0
-allow_anonymous false
-password_file C:/Program Files/mosquitto/passwordfile
-acl_file <project_folder>/acl
-
-# TLS listener (port 8883)
-listener 8883 0.0.0.0
-allow_anonymous false
-password_file C:/Program Files/mosquitto/passwordfile
-acl_file <project_folder>/acl
-cafile <project_folder>/ca.crt
-certfile <project_folder>/server.crt
-keyfile <project_folder>/server.key
-```
-
-## Step 5: Add Credentials to Code
+## Step 2: Add Credentials to Code
 
 ### mqtt_publisher.py (RPi)
 ```python
-MQTT_USERNAME = "rpi4_zone_a"
-MQTT_PASSWORD = "<PASSWORD>"
+MQTT_USERNAME = "rpi"
+MQTT_PASSWORD = "1234"
 ```
 
 ### main_computer.py (Coordinator)
-Add after creating the MQTT client:
 ```python
-self.client = mqtt.Client(client_id="coordinator")
 self.client.username_pw_set("coordinator", "<PASSWORD>")
+self.client.tls_set(ca_certs=os.path.join(..., "certs", "ca.crt"))
 ```
 
-### main_pico.py (Pico)
-```python
-mqtt_client = MQTTClient(
-    MQTT_CLIENT_ID, MQTT_BROKER,
-    port=MQTT_PORT, keepalive=60,
-    user="pico_1", password="<PASSWORD>"  # or pico_2 for second Pico
-)
+### wifi_manager.cpp (M5Stick)
+```cpp
+static const char* MQTT_PASSWORD = "password000";  // shared m5tag password
 ```
+The M5Stick uses the tag ID (e.g. `m5tag01`) from `main.cpp` as the MQTT username, but authenticates against the shared `m5tag` password file entry.
+
+> **Note:** Update `WIFI_SSID`, `WIFI_PASSWORD`, and `MQTT_IP` in `wifi_manager.cpp` to match your hotspot.
+
+### Copy ca.crt to devices
+
+**RPi:**
+```bash
+mkdir -p ~/iot_project/certs
+scp certs/ca.crt pi@<RPI_IP>:~/iot_project/certs/ca.crt
+```
+
+**M5Stick:**
+Copy `certs/ca.crt` to `m5Stick/certs/ca.crt` in the project, then rebuild and flash via PlatformIO.
 
 ---
 
@@ -144,26 +103,38 @@ mqtt_client = MQTTClient(
 
 Start in this order:
 
-### 1. Start Mosquitto Broker (Admin terminal)
+### 1. Start Mosquitto Broker
+
+**Important:** The broker must be started with `OPENSSL_CONF` set to enforce TLS 1.2 (ESP32 mbedTLS does not support TLS 1.3).
+
 ```powershell
-# Kill any existing instance
+# Stop the Windows service first (Admin terminal)
 net stop mosquitto
 
-# Start with config
-cd "C:\Program Files\mosquitto"
-mosquitto -c mosquitto.conf -v
+# Start manually with TLS 1.2 enforcement
+$env:OPENSSL_CONF="<project_folder>\certs\openssl_tls12.cnf"
+mosquitto -c "C:\Program Files\Mosquitto\mosquitto.conf" -v
 ```
 
-### 2. Start Main Computer (Deduplicator)
+Or as a Windows service (if `OPENSSL_CONF` is set as a system environment variable):
 ```powershell
-cd <project_folder>
+net start mosquitto
+```
+
+### 2. Start Main Computer (Coordinator)
+```powershell
+cd <project_folder>\main_coordinator
 python main_computer.py
 ```
 
 ### 3. Start RPi Publisher
-```powershell
-cd <project_folder>
-myenv/Scripts/activate
+```bash
+# Via systemd service (recommended)
+sudo systemctl start mqtt_publisher
+
+# Or manually
+cd ~/iot_project
+source venv/bin/activate
 python mqtt_publisher.py
 ```
 
@@ -175,7 +146,7 @@ mpremote reset
 ```
 
 ### 5. Power on M5StickC
-Already flashed with `m5_stick_code.cpp` via Arduino IDE. Just plug in.
+Already flashed via PlatformIO. Just plug in or press the reset button.
 
 ---
 
@@ -183,21 +154,25 @@ Already flashed with `m5_stick_code.cpp` via Arduino IDE. Just plug in.
 
 ### Subscribe to topics
 ```powershell
-# All hospital data
-mosquitto_sub -h localhost -p 1883 -u <USER> -P <PASSWORD> -t "hospital/#" -v
+# All hospital data (port 1883, no TLS)
+mosquitto_sub -h localhost -p 1883 -u coordinator -P <PASSWORD> -t "hospital/#" -v
 
-# Scan data only
-mosquitto_sub -h localhost -p 1883 -u <USER> -P <PASSWORD> -t "hospital/medicine/scan/#" -v
-
-# RSSI only
-mosquitto_sub -h localhost -p 1883 -u coordinator -P 1234 -t "hospital/medicine/rssi_only/#" -v
+# Emergency messages from M5Stick
+mosquitto_sub -h localhost -p 1883 -u coordinator -P <PASSWORD> -t "hospital/medicine/emergency/#" -v
 
 # Heartbeats
-mosquitto_sub -h localhost -p 1883 -u <USER> -P <PASSWORD> -t "hospital/system/#" -v
+mosquitto_sub -h localhost -p 1883 -u dashboard -P <PASSWORD> -t "hospital/system/#" -v
 ```
+
+### Test TLS connection
+```powershell
+openssl s_client -connect <BROKER_IP>:8883 -tls1_2 -CAfile certs/ca.crt
+```
+Should show `Protocol: TLSv1.2` and `Verify return code: 0 (ok)`.
 
 ### Test ACL (should be denied)
 ```powershell
+# Dashboard cannot publish
 mosquitto_pub -h localhost -p 1883 -u dashboard -P <PASSWORD> -t "hospital/medicine/scan/test" -m "should fail"
 ```
 
@@ -254,9 +229,90 @@ sudo journalctl -u mqtt_publisher -f      # follow live logs
 
 | Problem | Solution |
 |---------|----------|
-| Port 1883 already in use | `taskkill /IM mosquitto.exe /F` (run as Admin) |
+| Port 1883 already in use | `net stop mosquitto` then `taskkill /IM mosquitto.exe /F` (Admin) |
 | "not authorised" error | Check username matches password file and ACL |
 | Pico WiFi not connecting | Check SSID/password, move closer to router, reset Pico |
 | No data from Pico in deduplicator | RPi may be reporting same sequence first (dedup working correctly) |
 | M5StickC draining battery fast | Reduce display brightness, increase broadcast interval |
 | `cannot execute: required file not found` on Pi | Windows line endings — run `sed -i 's/\r//' install_service.sh mqtt_publisher.service` then retry |
+
+---
+
+## TLS Debugging Guide
+
+### M5Stick error: `-9984 X509 Certificate verification failed`
+
+**Cause:** The broker is using TLS 1.3 but ESP32 mbedTLS only supports TLS 1.2.
+
+**Fix:** Start the broker with `OPENSSL_CONF` set:
+```powershell
+$env:OPENSSL_CONF="<project_folder>\certs\openssl_tls12.cnf"
+mosquitto -c "C:\Program Files\Mosquitto\mosquitto.conf" -v
+```
+
+**Verify TLS version:**
+```powershell
+openssl s_client -connect <BROKER_IP>:8883 -tls1_2 -CAfile certs/ca.crt 2>&1 | Select-String "Protocol"
+```
+Must show `TLSv1.2`. If it shows `TLSv1.3`, `OPENSSL_CONF` is not set.
+
+> **Note:** The M5Stick code uses `wifiClientSecure.setInsecure()` instead of `setCACert()` due to an ESP32 mbedTLS compatibility issue with self-signed CA certs. The connection is still TLS encrypted — it just skips server certificate verification.
+
+### M5Stick error: `-1 start_ssl_client`
+
+**Cause:** The broker is not running, not listening on port 8883, or `OPENSSL_CONF` is not set.
+
+**Fix:**
+1. Check broker is listening: `netstat -ano | findstr ":8883"`
+2. If empty, start the broker with `OPENSSL_CONF` as shown above
+3. If listening but still failing, restart the broker
+
+### M5Stick error: `MQTT Connect failed, rc=5`
+
+**Cause:** MQTT authentication failed. The username is not in `password.txt`.
+
+**Fix:** Add the M5Stick user:
+```powershell
+& "C:\Program Files\mosquitto\mosquitto_passwd.exe" -b password.txt m5tag password000
+```
+Then restart the broker.
+
+> The M5Stick uses the tag ID from `main.cpp` (e.g. `m5tag01`) as the MQTT username. However, the password file entry should be `m5tag` (shared account). If using per-tag accounts, add each one individually.
+
+### RPi error: `Connection timed out` on port 8883
+
+**Cause:** Missing `tls_set()` in `mqtt_publisher.py` or wrong ca.crt path.
+
+**Fix:** Ensure `mqtt_publisher.py` has:
+```python
+self.client.tls_set(ca_certs=os.path.expanduser("~/iot_project/certs/ca.crt"))
+```
+And verify `ca.crt` exists on the RPi at that path.
+
+### Broker error: `Only one usage of each socket address`
+
+**Cause:** Another Mosquitto instance is already running on that port.
+
+**Fix:**
+```powershell
+# Stop the Windows service
+net stop mosquitto
+# Kill any remaining processes
+taskkill /IM mosquitto.exe /F
+# Then start again
+$env:OPENSSL_CONF="<project_folder>\certs\openssl_tls12.cnf"
+mosquitto -c "C:\Program Files\Mosquitto\mosquitto.conf" -v
+```
+
+### Setting OPENSSL_CONF as a system environment variable
+
+To avoid setting `$env:OPENSSL_CONF` every time, set it permanently (Admin PowerShell):
+```powershell
+[Environment]::SetEnvironmentVariable("OPENSSL_CONF", "<project_folder>\certs\openssl_tls12.cnf", "Machine")
+```
+Then restart the Mosquitto service:
+```powershell
+net stop mosquitto
+net start mosquitto
+```
+> **Note:** The service may need a full PC restart to pick up the new environment variable.

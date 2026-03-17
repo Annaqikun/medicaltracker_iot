@@ -1,12 +1,15 @@
+#include <Arduino.h>
+#include <M5Unified.h>
 #include "ble.h"
 #include "mac.h"
 #include "med.h"
 #include "temp.h"
 #include "battery.h"
 #include "movement.h"
+#include "wifi_manager.h"
+#include "ble_ack.h"
 
-#include <Arduino.h>
-#include <M5Unified.h>
+static const char* TAG_ID = "m5tag";  // change this for each device
 
 void drawM5Screen() {
   M5.Display.clearDisplay();
@@ -19,10 +22,8 @@ void drawM5Screen() {
   M5.Display.printf("T:%.2fC\n", getTemperature());
   M5.Display.printf("B:%u%%\n", getBatteryPercent());
   M5.Display.printf("Move:%s\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY");
-  M5.Display.setTextSize(2);
-  M5.Display.println(" /\\_/\\ ");
-  M5.Display.println("( o.o )");
-  M5.Display.println(" > ^ < ");
+  M5.Display.printf("WiFi:%s\n", isWifiConnected() ? "ON" : "OFF");
+  M5.Display.printf("MQTT:%s\n", isMqttConnected() ? "ON" : "OFF");
 }
 
 void drawSerial() {
@@ -32,6 +33,9 @@ void drawSerial() {
   Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
   Serial.printf("Move: %s  |a|=%.2fg\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY", getAccelMagnitude());
   Serial.printf("Seq: %u\n", getLastSentSeq());
+  Serial.printf("WiFi session: %s\n", isWifiSessionActive() ? "ACTIVE" : "INACTIVE");
+  Serial.printf("WiFi link: %s\n", isWifiConnected() ? "CONNECTED" : "DISCONNECTED");
+  Serial.printf("MQTT: %s\n", isMqttConnected() ? "CONNECTED" : "DISCONNECTED");
 }
 
 void setup() {
@@ -52,6 +56,10 @@ void setup() {
 
   initBLE();
 
+  initWifiModule(TAG_ID);
+
+  initBleAckTracker();
+
   drawM5Screen();
 
   Serial.println("Advertising started");
@@ -64,16 +72,17 @@ void loop() {
   bool bleDirty = false;
   bool displayDirty = false;
 
+  wifiTask();
+
   if (M5.BtnA.wasPressed()) {
-    toggleMedicine();
-    bleDirty = true;
-    displayDirty = true;
-    Serial.printf("[%lu] MED changed: %s\n", millis(), getMedicineName().c_str());
+    Serial.println("[MAIN] Manual BLE ack test");
+    recordBleAck();
   }
 
   if (M5.BtnB.wasPressed()) {
-    Serial.println("=== STATUS ===");
-    drawSerial();
+    Serial.println("=== START WIFI SESSION ===");
+    startWifiSession(WifiSessionReason::Manual);
+    displayDirty = true;
   }
 
   if (tempTask()) {
@@ -93,6 +102,11 @@ void loop() {
     setAdvertisedStationary(isCurrentlyStationary());
     bleDirty = true;
     displayDirty = true;
+  }
+
+  if (!isWifiSessionActive() && shouldTriggerLostBleFailover()) {
+    Serial.println("[MAIN] Lost BLE detected -> start Wi-Fi failover");
+    startWifiSession(WifiSessionReason::LostBle);
   }
 
   if (bleDirty) updateAdvertising();
