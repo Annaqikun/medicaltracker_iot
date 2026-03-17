@@ -323,12 +323,14 @@ class Database:
 
     def query_latest_positions(
         self,
-        limit: int = 100
+        limit: int = 100,
+        hours: int = 168
     ) -> List[Dict[str, Any]]:
         """Get the latest calculated positions for all medicines.
 
         Args:
             limit: Maximum number of results to return.
+            hours: How many hours of history to scan for latest points.
 
         Returns:
             List[Dict[str, Any]]: List of position records with keys:
@@ -336,11 +338,21 @@ class Database:
         """
         query = f'''
         from(bucket: "{self.bucket}")
-            |> range(start: -1h)
+            |> range(start: -{hours}h)
             |> filter(fn: (r) => r._measurement == "medicine_position")
+            |> filter(fn: (r) =>
+                r._field == "x" or
+                r._field == "y" or
+                r._field == "z" or
+                r._field == "receiver_count" or
+                r._field == "accuracy"
+            )
             |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
             |> group(columns: ["mac"])
-            |> last()
+            |> sort(columns: ["_time"], desc: true)
+            |> limit(n: 1)
+            |> group()
+            |> sort(columns: ["_time"], desc: true)
             |> limit(n: {limit})
         '''
 

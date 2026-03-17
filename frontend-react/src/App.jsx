@@ -266,12 +266,12 @@ function App() {
 
                     <div className="panel-body map-body" onWheel={preventWheelTracking}>
                         <div className="zone-grid">
-                            <MapZone title="Cold Storage" subtitle="Refrigerated medications" className="zone-cold" />
-                            <MapZone title="Nurse Prep" subtitle="Staging and handling" className="zone-nurse" />
-                            <MapZone title="ICU Ward" subtitle="High priority medication area" className="zone-icu" />
-                            <MapZone title="Storage A" subtitle="General supplies" className="zone-storage" />
-                            <MapZone title="Main Corridor" subtitle="Live tag markers are visual placeholders until trilaterated coordinates are exposed" className="zone-corridor" />
-                            <MapZone title="Pharmacy" subtitle="Dispensing area" className="zone-pharmacy" />
+                            <MapZone title="Cold Storage" className="zone-cold" />
+                            <MapZone title="Nurse Prep" className="zone-nurse" />
+                            <MapZone title="ICU Ward" className="zone-icu" />
+                            <MapZone title="Storage A" className="zone-storage" />
+                            <MapZone title="Main Corridor" className="zone-corridor" />
+                            <MapZone title="Pharmacy" className="zone-pharmacy" />
 
                             <div className="marker-layer">
                                 {mapTags.map((m, idx) => {
