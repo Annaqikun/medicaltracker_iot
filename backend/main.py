@@ -34,6 +34,21 @@ mqtt_client: Optional[mqtt.Client] = None
 mqtt_thread: Optional[threading.Thread] = None
 
 
+WHITELIST_TOPIC = "hospital/system/whitelist"
+
+
+def publish_whitelist(client: mqtt.Client) -> None:
+    """Publish the current tag whitelist as a retained MQTT message.
+
+    RPi receivers subscribe to this topic and update their local
+    whitelist automatically.
+    """
+    whitelist = tag_registry.get_whitelist()
+    payload = json.dumps(whitelist)
+    client.publish(WHITELIST_TOPIC, payload, qos=1, retain=True)
+    logger.info(f"Published whitelist ({len(whitelist)} MACs) to {WHITELIST_TOPIC}")
+
+
 def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
     """Configure and create MQTT client.
 
@@ -66,6 +81,8 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
             logger.info("Connected to MQTT broker")
             client.subscribe(settings.mqtt.topic)
             logger.info(f"Subscribed to topic: {settings.mqtt.topic}")
+            # Publish whitelist as retained message so RPis get it immediately
+            publish_whitelist(client)
         else:
             logger.error(f"Failed to connect to MQTT broker: {rc}")
 

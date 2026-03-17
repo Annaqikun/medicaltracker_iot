@@ -13,7 +13,7 @@ import ssl
 
 
 # MQTT Settings
-MQTT_BROKER = "192.168.137.1"
+MQTT_BROKER = "192.168.137.118"
 MQTT_PORT = 8883
 MQTT_QOS = 1
 MQTT_USERNAME = "rpi"
@@ -26,6 +26,7 @@ KNOWN_MEDICINE_TAGS = [
 ]
 
 PUBLISH_ONLY_KNOWN_TAGS = True
+WHITELIST_TOPIC = "hospital/system/whitelist"
 COMPANY_ID = 0xFFFF
 
 # --- Logging setup ---
@@ -72,6 +73,7 @@ class MQTTPublisher:
         self.client.on_connect = self._on_connect
         self.client.on_publish = self._on_publish
         self.client.on_disconnect = self._on_disconnect
+        self.client.on_message = self._on_message
 
         self.connected = False
         self.publish_count = 0
@@ -92,9 +94,23 @@ class MQTTPublisher:
         if rc == 0:
             logger.info(f"Connected to MQTT broker at {self.broker}:{self.port}")
             self.connected = True
+            # Subscribe to whitelist topic (retained — get current list immediately)
+            client.subscribe(WHITELIST_TOPIC, qos=1)
+            logger.info(f"Subscribed to {WHITELIST_TOPIC}")
         else:
             logger.error(f"Connection failed with code {rc}")
             self.connected = False
+
+    def _on_message(self, client, userdata, message):
+        global KNOWN_MEDICINE_TAGS
+        if message.topic == WHITELIST_TOPIC:
+            try:
+                whitelist = json.loads(message.payload.decode("utf-8"))
+                if isinstance(whitelist, list):
+                    KNOWN_MEDICINE_TAGS = [mac.upper() for mac in whitelist]
+                    logger.info(f"Whitelist updated: {len(KNOWN_MEDICINE_TAGS)} MACs")
+            except Exception as e:
+                logger.error(f"Failed to parse whitelist: {e}")
 
     def _on_publish(self, client, userdata, mid):
         self.publish_count += 1
