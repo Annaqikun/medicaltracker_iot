@@ -4,10 +4,12 @@ This module provides the main FastAPI application with MQTT integration,
 REST API endpoints for querying medicine data, and CORS middleware.
 """
 
+import json
 import logging
 import ssl
 import threading
 import time
+from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -328,6 +330,38 @@ async def get_alerts(
     except Exception as e:
         logger.error(f"Error querying alerts: {e}")
         raise HTTPException(status_code=500, detail="Failed to query alerts")
+
+
+@app.post("/api/medicine/{mac}/find")
+async def find_medicine(mac: str) -> Dict[str, Any]:
+    """Trigger the 'find' buzzer on a specific medicine tag via MQTT.
+
+    Args:
+        mac: MAC address of the beacon.
+
+    Returns:
+        Dict: Status of the command.
+    """
+    if mqtt_client is None:
+        raise HTTPException(status_code=503, detail="MQTT client not available")
+
+    topic = f"hospital/medicine/command/{mac}/find"
+    payload = json.dumps({
+        "command": "find",
+        "timestamp": datetime.utcnow().isoformat()
+    })
+
+    try:
+        result = mqtt_client.publish(topic, payload)
+        if result.rc == 0:
+            logger.info(f"Published find command for {mac} to {topic}")
+            return {"status": "success", "message": f"Find command sent to {mac}"}
+        else:
+            logger.error(f"Failed to publish find command for {mac}: rc={result.rc}")
+            raise HTTPException(status_code=500, detail="Failed to send command to broker")
+    except Exception as e:
+        logger.error(f"Error publishing find command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/status")
