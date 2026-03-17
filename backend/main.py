@@ -15,6 +15,7 @@ import paho.mqtt.client as mqtt
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+import tag_registry
 from config import settings
 from database import Database
 from mqtt_handler import MedicineTracker
@@ -116,6 +117,13 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Medical Tracker backend...")
 
     try:
+        # Initialize tag registry
+        tag_registry.init_db()
+        registered_tags = tag_registry.get_all_tags()
+        logger.info(
+            f"Tag registry ready — {len(registered_tags)} tag(s) registered"
+        )
+
         # Initialize database
         db = Database(
             url=settings.INFLUXDB_URL,

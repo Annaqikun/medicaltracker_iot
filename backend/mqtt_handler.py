@@ -12,6 +12,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional, Tuple
 
+import tag_registry
+import hmac_verify
 from config import settings
 from database import Database
 from trilaterate import rssi_to_distance, trilaterate_weighted, calculate_position_error
@@ -79,13 +81,19 @@ class MedicineTracker:
                 logger.error(f"Error in cleanup loop: {e}")
 
     def _cleanup_old_data(self) -> None:
-        """Remove buffer entries older than the timeout threshold."""
+        """Remove buffer entries older than the timeout threshold.
+
+        Also clears stale sequence tracking entries so that tags
+        that reboot (resetting their sequence to 0) are not permanently
+        blocked.
+        """
         cutoff_time = datetime.utcnow() - timedelta(
             seconds=self.settings.buffer_timeout_seconds
         )
         removed_count = 0
 
         with self._buffer_lock:
+            stale_macs = []
             for mac in list(self._buffer.keys()):
                 for receiver_id in list(self._buffer[mac].keys()):
                     entry_ts = self._buffer[mac][receiver_id].get("ts")
@@ -96,6 +104,16 @@ class MedicineTracker:
                 # Remove empty MAC entries
                 if not self._buffer[mac]:
                     del self._buffer[mac]
+                    stale_macs.append(mac)
+
+        # Clear sequence tracking for MACs with no recent data so that
+        # rebooted tags (seq resets to 0) are not permanently rejected.
+        if stale_macs:
+            with self._seq_lock:
+                for mac in stale_macs:
+                    if mac in self._last_seq:
+                        del self._last_seq[mac]
+                        logger.debug(f"Cleared stale sequence tracking for {mac}")
 
         if removed_count > 0:
             logger.debug(f"Cleaned up {removed_count} stale buffer entries")
@@ -109,8 +127,9 @@ class MedicineTracker:
         """MQTT message callback handler.
 
         Processes incoming MQTT messages from BLE receivers, performs
-        deduplication, stores scan data, and triggers position calculation
-        when sufficient data is available.
+        tag registry lookup, HMAC verification, deduplication,
+        stores scan data, and triggers position calculation when
+        sufficient data is available.
 
         Args:
             client: MQTT client instance.
@@ -119,13 +138,13 @@ class MedicineTracker:
         """
         try:
             # Parse topic to extract receiver_id
-            # Topic format: medical/{receiver_id}/status
+            # Topic format: hospital/medicine/scan/{receiver_id}
             topic_parts = message.topic.split("/")
-            if len(topic_parts) < 3:
+            if len(topic_parts) < 4:
                 logger.warning(f"Unexpected topic format: {message.topic}")
                 return
 
-            receiver_id = topic_parts[1]
+            receiver_id = topic_parts[3]
 
             # Parse JSON payload
             payload = json.loads(message.payload.decode("utf-8"))
@@ -135,11 +154,37 @@ class MedicineTracker:
             mac = payload.get("mac")
             rssi = payload.get("rssi")
             seq = payload.get("sequence_number") or payload.get("seq")
-            medicine = payload.get("medicine", "unknown")
 
             if not mac or rssi is None:
                 logger.warning(f"Missing required fields in message: {payload}")
                 return
+
+            # --- Beacon registry lookup ---
+            tag = tag_registry.get_tag(mac)
+            if tag is None:
+                logger.warning(
+                    f"MAC {mac} not in tag registry — dropping message "
+                    f"(receiver={receiver_id})"
+                )
+                return
+
+            # --- HMAC verification ---
+            if "hmac" not in payload:
+                logger.warning(
+                    f"No HMAC field in payload for {mac} — dropping message "
+                    f"(receiver={receiver_id})"
+                )
+                return
+
+            if not hmac_verify.verify_from_mqtt_payload(payload, tag["hmac_key"]):
+                logger.warning(
+                    f"Invalid HMAC for {mac} from receiver {receiver_id} — "
+                    f"dropping message"
+                )
+                return
+
+            # Get medicine name from registry (not from payload)
+            medicine = tag["medicine_name"]
 
             # Deduplication check
             if not self._check_sequence(mac, seq):
@@ -202,12 +247,18 @@ class MedicineTracker:
     def _check_sequence(self, mac: str, seq: Optional[int]) -> bool:
         """Check if message is new based on sequence number.
 
+        Uses modular arithmetic for proper 16-bit wraparound handling.
+        A forward difference (mod 65536) between 1 and 1000 is treated
+        as a genuinely new packet.  A difference of 0 (exact duplicate)
+        or > 1000 (replay / reorder) causes the packet to be rejected.
+
         Args:
             mac: MAC address of the beacon.
-            seq: Sequence number from the message.
+            seq: Sequence number from the message (0-65535).
 
         Returns:
-            bool: True if message should be processed, False if duplicate.
+            bool: True if message should be processed, False if duplicate
+                  or replay.
         """
         if seq is None:
             # No sequence number, allow through
@@ -215,18 +266,25 @@ class MedicineTracker:
 
         with self._seq_lock:
             last_seq = self._last_seq.get(mac)
-            if last_seq is not None and seq <= last_seq:
-                # Check if it's a wraparound (seq reset to 0)
-                # If last was 90+ and new is 0-10, it's a reset, not duplicate
-                if last_seq > 90 and seq <= 10:
-                    logger.debug(f"Sequence reset detected for {mac}: {last_seq} -> {seq}")
-                    self._last_seq[mac] = seq
-                    return True
-                if last_seq - seq <= 100:  # Not a wraparound (within 100)
-                    logger.debug(f"Duplicate sequence detected for {mac}: {seq} <= {last_seq}")
-                    return False
-            self._last_seq[mac] = seq
-            return True
+            if last_seq is None:
+                # First message from this beacon
+                self._last_seq[mac] = seq
+                return True
+
+            diff = (seq - last_seq) % 65536
+
+            if 1 <= diff <= 1000:
+                # Normal forward progression (including wraparound)
+                self._last_seq[mac] = seq
+                return True
+
+            # diff == 0 means exact duplicate; diff > 1000 means replay
+            # or very old packet that wrapped around
+            logger.debug(
+                f"Rejected sequence for {mac}: seq={seq}, last_seq={last_seq}, "
+                f"diff={diff} (duplicate or replay)"
+            )
+            return False
 
     def _update_buffer(
         self,
