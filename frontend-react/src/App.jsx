@@ -68,16 +68,46 @@ async function fetchPositionsWithFallback() {
 }
 
 const TagCard = ({ item }) => {
+    const [isBuzzing, setIsBuzzing] = useState(false);
     const status = deriveStatus(item);
+
+    const handleFind = async () => {
+        if (!item?.mac || isBuzzing) return;
+
+        setIsBuzzing(true);
+        setTimeout(() => setIsBuzzing(false), 5000);
+
+        try {
+            await fetch(`/api/medicine/${item.mac}/find`, {
+                method: 'POST',
+            });
+        } catch (error) {
+            console.error('Failed to trigger find command:', error);
+        }
+    };
+
+    const boxId = String(item?.mac || '').replace(/[^a-fA-F0-9]/g, '').slice(-4).toUpperCase() || '0000';
+
     return (
-        <article className="tag-card">
+        <article className={`tag-card ${isBuzzing ? 'tag-card-buzzing' : ''}`}>
             <div className="tag-card-row">
                 <div className="tag-main-name">{medicineLabel(item)}</div>
                 <div className="tag-chevron">v</div>
             </div>
             <div className="tag-card-meta">{String(item.mac || '').toLowerCase()}</div>
             <div className={`tag-status tag-status-${status.css}`}>{status.label}</div>
-            <div className="tag-battery">Battery {formatBattery(item.battery)}</div>
+            <div className="tag-card-actions">
+                <div className="tag-battery">Battery {formatBattery(item.battery)}</div>
+                <button
+                    type="button"
+                    className={`tag-find-btn ${isBuzzing ? 'is-buzzing' : ''}`}
+                    onClick={handleFind}
+                    disabled={isBuzzing}
+                >
+                    Find tag
+                </button>
+            </div>
+            {isBuzzing && <div className="tag-buzzing">Buzzing Box #{boxId}...</div>}
         </article>
     );
 };
@@ -106,26 +136,42 @@ function App() {
                 fetchPositionsWithFallback(),
             ]);
 
-            if (!medRes.ok || !alertRes.ok || !statusRes.ok) {
-                throw new Error('API response not OK');
-            }
-
-            const [medData, alertData, statusData] = await Promise.all([
-                medRes.json(),
-                alertRes.json(),
-                statusRes.json(),
-            ]);
+            const medData = medRes.ok ? await medRes.json() : [];
+            const alertData = alertRes.ok ? await alertRes.json() : [];
+            const statusData = statusRes.ok ? await statusRes.json() : { mqtt_connected: false };
 
             const map = (Array.isArray(positionData) ? positionData : []).reduce((acc, pos) => {
                 if (pos?.mac) acc[pos.mac] = pos;
                 return acc;
             }, {});
 
-            setMedicines(Array.isArray(medData) ? medData : []);
+            // Merge status and position identities so dashboard still shows tags when only positions exist.
+            const mergedByMac = {};
+            (Array.isArray(medData) ? medData : []).forEach((item) => {
+                if (item?.mac) mergedByMac[item.mac] = item;
+            });
+            (Array.isArray(positionData) ? positionData : []).forEach((pos) => {
+                if (!pos?.mac) return;
+                if (!mergedByMac[pos.mac]) {
+                    mergedByMac[pos.mac] = {
+                        mac: pos.mac,
+                        medicine: pos.medicine,
+                        battery: null,
+                        temperature: null,
+                        moving: false,
+                        receiver_id: null,
+                        time: pos.time,
+                    };
+                } else if (!mergedByMac[pos.mac].medicine && pos.medicine) {
+                    mergedByMac[pos.mac].medicine = pos.medicine;
+                }
+            });
+
+            setMedicines(Object.values(mergedByMac));
             setAlerts(Array.isArray(alertData) ? alertData : []);
             setStatus(statusData || { mqtt_connected: false });
             setPositionsByMac(map);
-            setApiState('Online');
+            setApiState((medRes.ok || Object.keys(map).length > 0) ? 'Online' : 'Error');
             setLastRefresh(new Date().toLocaleTimeString('en-US', {
                 hour: 'numeric',
                 minute: '2-digit',
@@ -146,6 +192,21 @@ function App() {
     }, []);
 
     const shownTags = medicines.slice(0, 8);
+    const medicinesByMac = medicines.reduce((acc, item) => {
+        if (item?.mac) acc[item.mac] = item;
+        return acc;
+    }, {});
+    const mapTags = Object.values(positionsByMac)
+        .filter((pos) => Number.isFinite(Number(pos?.x)) && Number.isFinite(Number(pos?.y)))
+        .map((pos) => {
+            const base = medicinesByMac[pos.mac] || {};
+            return {
+                ...base,
+                ...pos,
+                mac: pos.mac,
+                medicine: base.medicine || pos.medicine,
+            };
+        });
     const preventWheelTracking = (event) => event.preventDefault();
 
     return (
@@ -213,10 +274,8 @@ function App() {
                             <MapZone title="Pharmacy" subtitle="Dispensing area" className="zone-pharmacy" />
 
                             <div className="marker-layer">
-                                {shownTags.map((m, idx) => {
-                                    const position = positionsByMac[m.mac];
-                                    const hasWorldPosition = position && Number.isFinite(Number(position.x)) && Number.isFinite(Number(position.y));
-                                    const coord = hasWorldPosition ? worldToMapPercent(position.x, position.y) : markerPosition(m, idx);
+                                {mapTags.map((m, idx) => {
+                                    const coord = worldToMapPercent(m.x, m.y);
                                     const state = deriveStatus(m);
 
                                     return (
@@ -226,7 +285,7 @@ function App() {
                                             style={{
                                                 left: `${coord.x}%`,
                                                 top: `${coord.y}%`,
-                                                opacity: hasWorldPosition ? 1 : 0.75,
+                                                opacity: 1,
                                             }}
                                         >
                                             <span className={`dot dot-${state.css}`} />
