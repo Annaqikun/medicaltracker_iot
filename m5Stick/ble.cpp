@@ -9,6 +9,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include "esp_bt.h"
 
 static BLEAdvertising* adv = nullptr;
 static BLEServer* ackServer = nullptr;
@@ -45,11 +46,17 @@ static std::string buildMfgData(const String& med, float temp, uint8_t battPct, 
 
   uint8_t mac[6];
   getMacBytes(mac);
-  for (int i = 0; i < 6; i++) s.push_back((char)mac[i]);
+  for (int i = 0; i < 6; i++) {
+    s.push_back((char)mac[i]);
+  }
 
   String m = med;
-  if (m.length() > 12) m = m.substring(0, 12);
-  while (m.length() < 12) m += ' ';
+  if (m.length() > 12) {
+    m = m.substring(0, 12);
+  }
+  while (m.length() < 12) {
+    m += ' ';
+  }
   s.append(m.c_str(), 12);
 
   int16_t t100 = (int16_t)lroundf(temp * 100.0f);
@@ -58,11 +65,15 @@ static std::string buildMfgData(const String& med, float temp, uint8_t battPct, 
   s.push_back((char)hi);
   s.push_back((char)lo);
 
-  if (battPct > 100) battPct = 100;
+  if (battPct > 100) {
+    battPct = 100;
+  }
   s.push_back((char)battPct);
 
   uint8_t flags = 0;
-  if (moving) flags |= 0x01; // bit0 = moving
+  if (moving) {
+    flags |= 0x01; // bit0 = moving
+  }
   s.push_back((char)flags);
 
   uint16_t seq = advSeq++;
@@ -99,21 +110,16 @@ class AckCharacteristicCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
+// BLE interval units are 0.625ms
+// Tune these based on your needs:
+// Faster = better tracking but drains battery
+// Slower = saves battery but less responsive
 static void applyAdaptiveInterval() {
-  // BLE interval units are 0.625ms
-  // Tune these based on your needs:
-  // - Faster = better tracking but drains battery
-  // - Slower = saves battery but less responsive
-  
-  uint16_t interval;
-  if (advertisedStationary) {
-    interval = 8000;  // 5000ms (5 seconds) - save battery when still
-  } else {
-    // MOVING - choose your speed:
-    interval = 1600;  // 1000ms (1 second) - balanced
-    // interval = 800;   // 500ms (0.5 seconds) - real-time but drains fast
-    // interval = 3200;  // 2000ms (2 seconds) - battery saver
+  if (adv == nullptr) {
+    return;
   }
+
+  uint16_t interval = advertisedStationary ? 8000 : 1600;
   
   adv->setMinInterval(interval);
   adv->setMaxInterval(interval);
@@ -140,6 +146,11 @@ static void setupAckGattServer() {
 }
 
 void updateAdvertising() {
+  if (adv == nullptr) {
+    Serial.println("[BLE] updateAdvertising skipped (adv null)");
+    return;
+  }
+
   BLEAdvertisementData ad;
   ad.setFlags(0x06);
   ad.setName("MED_TAG");
@@ -173,6 +184,27 @@ void initBLE() {
   applyAdaptiveInterval();
 
   updateAdvertising();
+}
+
+void stopBLE() {
+    Serial.println("[BLE] Stopping BLE...");
+
+    if (adv != nullptr) {
+        adv->stop();
+        adv = nullptr;
+    }
+
+    if (ackService != nullptr) {
+        ackService->stop();
+        ackService = nullptr;
+    }
+
+    ackCharacteristic = nullptr;
+    ackServer = nullptr;
+
+    BLEDevice::deinit(true);
+
+    Serial.println("[BLE] BLE fully deinitialized");
 }
 
 void setAdvertisedTemperature(float temperature) {

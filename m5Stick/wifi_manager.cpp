@@ -7,9 +7,9 @@
 #include "temp.h"
 #include "battery.h"
 #include "timeSync.h"
+#include "ble.h"
 
-extern const uint8_t certs_ca_crt_start[] asm("_binary_certs_ca_crt_start");  
-extern const uint8_t certs_ca_crt_end[]   asm("_binary_certs_ca_crt_end");  // not used as of now
+extern const uint8_t certs_ca_crt_start[] asm("_binary_certs_ca_crt_start");
 
 static const char* WIFI_SSID = "WY16";
 static const char* WIFI_PASSWORD = "Tyrande69";
@@ -23,7 +23,6 @@ static const unsigned long WIFI_RETRY_INTERVAL_MS = 3000;
 static const unsigned long MQTT_RETRY_INTERVAL_MS = 3000;
 
 static String currentTagId;
-
 static WifiSessionReason currentSessionReason = WifiSessionReason::None;
 
 // INTERNAL STATE
@@ -34,6 +33,9 @@ static bool wifiSessionActive = false;
 static unsigned long wifiSessionStartMs = 0;
 static unsigned long lastWifiRetryMs = 0;
 static unsigned long lastMqttRetryMs = 0;
+
+static bool pendingFindBuzz = false;
+static bool pendingFindAck = false;
 
 // HELPER: enum -> readable text
 static const char* reasonToString(WifiSessionReason reason) {
@@ -84,6 +86,7 @@ static String getAckTopic() {
 static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     String topicStr = String(topic);
     String message;
+    message.reserve(length);
 
     // convert payload to readable message
     for (unsigned int i = 0; i < length; i++) {
@@ -94,33 +97,29 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.printf("Topic: %s\n", topicStr.c_str());
     Serial.printf("Payload: %s\n", message.c_str());
 
-    if (topicStr == getCommandTopic()) {
-        if (message == "find") {
-            Serial.println("[MQTT] FIND command received");
+    if (topicStr != getCommandTopic()) {
+        return;
+    }
 
-            // Buzzer response
-            M5.Speaker.tone(2000, 500);
-            delay(200);
-            M5.Speaker.tone(2000, 500);
-
-            // Send acknowledgement
-            String ackPayload = makePayload(currentTagId.c_str(), "status", "find_received");
-            mqttClient.publish(getAckTopic().c_str(), ackPayload.c_str());
-
-            Serial.println("[MQTT] Sent ACK for find command");
-        } else {
-            Serial.println("[MQTT] Unknown command received");
-        }
+    if (message == "find") {
+        Serial.println("[MQTT] FIND command received");
+        pendingFindBuzz = true;
+        pendingFindAck = true;
+    } else {
+        Serial.println("[MQTT] Unknown command received");
     }
 }
 
 // CONNECTION HELPERS
 static void connectWifiIfNeeded() {
-    if (!wifiSessionActive) return;
-    if (WiFi.status() == WL_CONNECTED) return;
+    if (!wifiSessionActive || WiFi.status() == WL_CONNECTED) {
+        return;
+    }
 
     unsigned long now = millis();
-    if (now - lastWifiRetryMs < WIFI_RETRY_INTERVAL_MS) return;
+    if (now - lastWifiRetryMs < WIFI_RETRY_INTERVAL_MS) {
+        return;
+    }
     lastWifiRetryMs = now;
 
     Serial.println("[WiFi] Connecting...");
@@ -131,48 +130,84 @@ static void connectWifiIfNeeded() {
 }
 
 static void connectMqttIfNeeded() {
-    if (!wifiSessionActive) return;
-    if (WiFi.status() != WL_CONNECTED) return;
-    if (mqttClient.connected()) return;
+    if (!wifiSessionActive || WiFi.status() != WL_CONNECTED || mqttClient.connected()) {
+        return;
+    }
 
     unsigned long now = millis();
-    if (now - lastMqttRetryMs < MQTT_RETRY_INTERVAL_MS) return;
+    if (now - lastMqttRetryMs < MQTT_RETRY_INTERVAL_MS) {
+        return;
+    }
     lastMqttRetryMs = now;
-
-    String clientId = "M5StickCPlus-" + currentTagId;
 
     Serial.println("[MQTT] Connecting...");
     Serial.printf("[MQTT] Broker: %s:%u\n", MQTT_IP.toString().c_str(), MQTT_PORT);
 
-    bool timeOk = syncTimeWithNtp();
-    if (!timeOk) {
+    if (!syncTimeWithNtp()) {
         Serial.println("[TIME] Cannot start TLS MQTT without valid time");
         return;
     }
 
-    wifiClientSecure.setCACert((const char*)certs_ca_crt_start);
+    char clientId[32];
+    snprintf(clientId, sizeof(clientId), "M5StickCPlus-%s", currentTagId.c_str());
 
-    if (mqttClient.connect(clientId.c_str(), currentTagId.c_str(), MQTT_PASSWORD)) {
-        Serial.println("[MQTT] Connected");
-
-        bool ok = mqttClient.subscribe(getCommandTopic().c_str());
-        Serial.printf("[MQTT] Subscribe to %s => %s\n", getCommandTopic().c_str(), ok ? "OK" : "FAILED");
-        
-        const char* statusText;
-        if (currentSessionReason == WifiSessionReason::LostBle) {
-            statusText = "lost_ble";
-        } else {
-            statusText = "wifi_mqtt_connected";
-        }
-
-        String mqttPayload =  makeStatusPayload(statusText);
-        bool yup = mqttClient.publish(getEmergencyTopic().c_str(), mqttPayload.c_str());
-
-        Serial.printf("[MQTT] Published status payload => %s\n", yup ? "OK" : "FAILED");
-        Serial.printf("[MQTT] Payload: %s\n", mqttPayload.c_str());
-    } else {
+    if (!mqttClient.connect(clientId, currentTagId.c_str(), MQTT_PASSWORD)) {
         Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
+        return;
     }
+
+    Serial.println("[MQTT] Connected");
+
+    bool subscribed = mqttClient.subscribe(getCommandTopic().c_str());
+    Serial.printf("[MQTT] Subscribe to %s => %s\n",
+                  getCommandTopic().c_str(),
+                  subscribed ? "OK" : "FAILED");
+
+    const char* statusText =
+        (currentSessionReason == WifiSessionReason::LostBle)
+            ? "lost_ble"
+            : "wifi_mqtt_connected";
+
+    String mqttPayload = makeStatusPayload(statusText);
+    bool published = mqttClient.publish(getEmergencyTopic().c_str(), mqttPayload.c_str());
+    
+    Serial.printf("[MQTT] Published status payload => %s\n", published ? "OK" : "FAILED");
+}
+
+static void handlePendingFindCommand() {
+    if (!pendingFindBuzz) {
+        return;
+    }
+
+    // SEND ACK FIRST
+    if (pendingFindAck) {
+        String ackPayload = makePayload(currentTagId.c_str(), "status", "find_received");
+
+        bool ok = mqttClient.publish(getAckTopic().c_str(), ackPayload.c_str());
+        Serial.printf("[MQTT] Published ACK => %s\n", ok ? "OK" : "FAILED");
+
+        pendingFindAck = false;
+    }
+
+    // THEN DO BUZZER
+    Serial.println("[BUZZER] Starting 5-second alert");
+    Serial.println("[BUZZER] Press BtnA to stop early");
+
+    unsigned long buzzStart = millis();
+    while (millis() - buzzStart < 5000) {
+        M5.update();
+
+        if (M5.BtnA.wasPressed()) {
+            Serial.println("[BUZZER] Stopped early by BtnA");
+            break;
+        }
+        M5.Speaker.tone(2000, 100);
+        delay(100);
+    }
+    M5.Speaker.stop();
+    Serial.println("[BUZZER] Alert finished");
+
+    pendingFindBuzz = false;
 }
 
 // PUBLIC API
@@ -182,14 +217,13 @@ void initWifiModule(const char* tagId) {
     wifiClientSecure.setCACert((const char*)certs_ca_crt_start);
 
     mqttClient.setServer(MQTT_IP, MQTT_PORT);
+    mqttClient.setCallback(mqttCallback);
+    mqttClient.setBufferSize(128);
 
     WiFi.mode(WIFI_OFF);
 
     Serial.println("[WiFiModule] Initialized");
     Serial.printf("[WiFiModule] Tag ID: %s\n", currentTagId.c_str());
-    Serial.printf("[WiFiModule] Emergency topic: %s\n", getEmergencyTopic().c_str());
-    Serial.printf("[WiFiModule] Command topic: %s\n", getCommandTopic().c_str());
-    Serial.printf("[WiFiModule] Ack topic: %s\n", getAckTopic().c_str());
 }
 
 void wifiTask() {
@@ -197,16 +231,17 @@ void wifiTask() {
         return;
     }
 
-    if (WiFi.status() == WL_CONNECTED && !mqttClient.connected()) {
-        connectMqttIfNeeded();
-    }
-
     if (WiFi.status() != WL_CONNECTED) {
         connectWifiIfNeeded();
     }
 
+    if (WiFi.status() == WL_CONNECTED && !mqttClient.connected()) {
+        connectMqttIfNeeded();
+    }
+
     if (mqttClient.connected()) {
         mqttClient.loop();
+        handlePendingFindCommand();
     }
 
     if (millis() - wifiSessionStartMs >= WIFI_SESSION_DURATION_MS) {
@@ -221,11 +256,15 @@ void startWifiSession(WifiSessionReason reason) {
         return;
     }
 
+    stopBLE();
+
     currentSessionReason = reason;
     wifiSessionActive = true;
     wifiSessionStartMs = millis();
     lastWifiRetryMs = 0;
     lastMqttRetryMs = 0;
+    pendingFindBuzz = false;
+    pendingFindAck = false;
 
     Serial.println("[WiFiModule] Starting Wi-Fi session");
     Serial.printf("[WiFiModule] Using Tag ID: %s\n", currentTagId.c_str());
@@ -246,10 +285,15 @@ void stopWifiSession() {
     }
 
     WiFi.mode(WIFI_OFF);
+
     wifiSessionActive = false;
     currentSessionReason = WifiSessionReason::None;
+    pendingFindBuzz = false;
+    pendingFindAck = false;
 
-    Serial.println("[WiFiModule] Returned to BLE-only mode");
+    Serial.println("[WiFiModule] Rebooting to restore clean BLE state...");
+    delay(500);
+    ESP.restart();
 }
 
 bool publishEmergencyStatus(const String& message) {
