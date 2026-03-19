@@ -420,6 +420,197 @@ mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 \
 
 ---
 
+## File Reference
+
+| File | Purpose |
+|------|---------|
+| `backend/.env` | Backend config — MQTT + InfluxDB credentials |
+| `backend/config.py` | All env vars with defaults — **source of truth for settings** |
+| `backend/tag_registry.py` | SQLite tag database module |
+| `backend/tag_registry.db` | Generated SQLite database (not committed) |
+| `backend/hmac_verify.py` | HMAC-SHA256 verification logic |
+| `backend/ack_orchestrator.py` | ACK health check orchestration |
+| `backend/mqtt_handler.py` | MQTT message processing + HMAC auth |
+| `backend/database.py` | InfluxDB read/write operations |
+| `backend/trilaterate.py` | RSSI → distance + weighted centroid |
+| `provision.py` | Tag provisioning CLI |
+| `acl` | MQTT ACL — **canonical version, deploy this one** |
+| `acl.txt` | OUTDATED copy — do not use |
+| `mqtt setup/acl` | OUTDATED copy — do not use |
+| `Rasp_PI/mqtt_publisher.py` | RPi BLE scanner + MQTT publisher |
+| `Rasp_PI/m5stick_parser.py` | BLE payload parser (16-byte after Bleak strips Company ID) |
+| `Rasp_PI/install_service.sh` | RPi systemd service installer |
+| `m5Stick/ble.cpp` | BLE advertising + GATT server (ACK + command characteristics) |
+| `m5Stick/hmac.cpp` | HMAC-SHA256 signing + NVS key + serial provisioning |
+| `m5Stick/wifi_manager.cpp` | WiFi/MQTT session management |
+| `m5Stick/main.cpp` | Boot flow + display modes + button handlers |
+| `m5Stick/platformio.ini` | PlatformIO build config |
+| `main_coordinator/` | LEGACY — experimental deduplicator, not needed |
+
+---
+
+## All Environment Variables
+
+See `backend/config.py` for defaults. Set in `backend/.env`:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MQTT_HOST` | `localhost` | MQTT broker address |
+| `MQTT_PORT` | `8883` | MQTT port (set 1883 for plaintext dev) |
+| `MQTT_USERNAME` | `` | MQTT auth username |
+| `MQTT_PASSWORD` | `` | MQTT auth password |
+| `MQTT_CA_CERT` | `None` | Path to CA cert for TLS (omit for plaintext) |
+| `MQTT_TOPIC` | `hospital/medicine/scan/#` | Scan subscription topic |
+| `INFLUXDB_URL` | `http://localhost:8086` | InfluxDB address |
+| `INFLUXDB_TOKEN` | `` | InfluxDB API token |
+| `INFLUXDB_ORG` | `medical` | InfluxDB org (**use `iot` for this project**) |
+| `INFLUXDB_BUCKET` | `medicine_tracking` | InfluxDB bucket |
+| `TAG_DB_PATH` | `tag_registry.db` | SQLite tag registry path |
+| `RSSI_REFERENCE` | `-59` | RSSI at 1 meter (dBm) |
+| `PATH_LOSS_EXPONENT` | `2.5` | Radio path loss exponent |
+| `BUFFER_TIMEOUT_SECONDS` | `10.0` | Stale buffer entry timeout |
+| `POSITION_CALCULATION_INTERVAL` | `2.0` | Min seconds between trilateration |
+| `ACK_PERIOD_SECONDS` | `120.0` | How often to check each tag |
+| `ACK_CHECK_INTERVAL_SECONDS` | `10.0` | Orchestrator loop interval |
+| `ACK_MAX_ATTEMPTS` | `3` | Failures before tag_potentially_lost alert |
+| `ACK_RESULT_TIMEOUT_SECONDS` | `30.0` | Timeout waiting for RPi ack result |
+
+---
+
+## Tag Registry Schema
+
+SQLite database at `backend/tag_registry.db`:
+
+```sql
+CREATE TABLE tags (
+    mac           TEXT PRIMARY KEY,       -- BLE MAC address
+    hmac_key      BLOB NOT NULL,          -- 32-byte HMAC-SHA256 key
+    medicine_name TEXT NOT NULL,          -- Human-readable name
+    tag_id        TEXT NOT NULL DEFAULT 'm5tag',  -- MQTT identity (metadata)
+    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Managed via `provision.py` CLI or `POST /api/tags` API.
+
+---
+
+## InfluxDB Measurements
+
+### `medicine_status` (raw scan data, 30-day retention)
+- **Tags:** `mac`, `receiver_id`, `medicine`
+- **Fields:** `distance` (float), `moving` (bool), `temperature` (float), `battery` (int), `sequence_number` (int)
+
+### `medicine_position` (trilateration results, 90-day retention)
+- **Tags:** `mac`, `medicine`
+- **Fields:** `x`, `y`, `z` (float), `accuracy` (float), `receiver_count` (int)
+
+### `alerts` (system alerts, 1-year retention)
+- **Tags:** `mac`, `alert_type`, `severity`, `medicine`
+- **Fields:** `message` (string), metadata fields
+
+---
+
+## BLE GATT Characteristics
+
+Service UUID: `12345678-1234-1234-1234-1234567890ab`
+
+| Characteristic | UUID | Property | Purpose |
+|----------------|------|----------|---------|
+| ACK | `abcdefab-1234-1234-1234-abcdefabcdef` | Write | RPi writes `"ack"` → M5 calls `recordBleAck()` |
+| Command | `abcdefab-1234-1234-1234-abcdefabcdf0` | Write | RPi writes `"find"` → M5 plays melody |
+
+---
+
+## MQTT Payload Examples
+
+### Scan message (RPi → Backend)
+Topic: `hospital/medicine/scan/rpi_a`
+```json
+{
+  "timestamp": "2026-03-20T10:30:45Z",
+  "receiver_id": "rpi_a",
+  "mac": "4C:75:25:CB:86:62",
+  "rssi": -65,
+  "temperature": 24.5,
+  "battery": 85,
+  "sequence_number": 42,
+  "moving": false,
+  "hmac": "a3f81b2c"
+}
+```
+
+### Emergency message (M5 → Backend, over WiFi)
+Topic: `hospital/medicine/emergency/4C:75:25:CB:86:62`
+```json
+{
+  "mac": "4C:75:25:CB:86:62",
+  "status": "lost_ble",
+  "temp_c": 25.5,
+  "battery_percent": 70
+}
+```
+
+### ACK check request (Backend → RPi)
+Topic: `hospital/medicine/ack_check/4C:75:25:CB:86:62`
+```json
+{"emergency": false}
+```
+
+### ACK result (RPi → Backend)
+Topic: `hospital/medicine/ack_result/rpi_a`
+```json
+{
+  "mac": "4C:75:25:CB:86:62",
+  "status": "success",
+  "receiver_id": "rpi_a",
+  "timestamp": "2026-03-20T10:31:00Z"
+}
+```
+
+### BLE command result (RPi → Backend)
+Topic: `hospital/medicine/command_ble_result/rpi_a`
+```json
+{
+  "mac": "4C:75:25:CB:86:62",
+  "command": "find",
+  "status": "success",
+  "receiver_id": "rpi_a",
+  "timestamp": "2026-03-20T10:31:05Z"
+}
+```
+
+### Whitelist (Backend → RPi, retained)
+Topic: `hospital/system/whitelist`
+```json
+["4C:75:25:CB:86:62", "AA:BB:CC:DD:EE:FF"]
+```
+
+### Command to M5 (Backend → M5, over WiFi)
+Topic: `hospital/medicine/command/4C:75:25:CB:86:62`
+```
+find
+```
+or
+```
+resume_ble
+```
+
+---
+
+## ACL Permissions
+
+See root `acl` file for the full ACL. Summary:
+
+| User | Can Write | Can Read |
+|------|-----------|----------|
+| `rpi` | scan, rssi_only, rpi_status, ack_result, command_ble_result | whitelist, ack_check, command_ble |
+| `m5tag` | emergency, ack | command |
+| `coordinator` | rssi, command, coordinator_status, whitelist, ack_check, command_ble | scan, emergency, ack_result, command_ble_result |
+| `dashboard` | (none) | hospital/# (everything) |
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |
