@@ -9,14 +9,20 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <M5Unified.h>
+
+extern bool findMeActive;
+extern void drawM5Screen();
 
 static BLEAdvertising* adv = nullptr;
 static BLEServer* ackServer = nullptr;
 static BLEService* ackService = nullptr;
 static BLECharacteristic* ackCharacteristic = nullptr;
+static BLECharacteristic* commandCharacteristic = nullptr;
 
 static const char* ACK_SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
 static const char* ACK_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdef";
+const char* COMMAND_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdf0";
 
 static uint16_t advSeq = 0;
 
@@ -101,6 +107,67 @@ class AckCharacteristicCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
+void triggerFindMe() {
+  findMeActive = true;
+  drawM5Screen();
+
+  M5.Speaker.setVolume(255);
+
+  // {frequency, duration, gap after}
+  const int melody[][3] = {
+    {1319, 400, 8},   // E
+    {1319, 400, 8},   // E
+    {1760, 350, 20},  // A
+    {1976, 350, 8},   // B
+    {2093, 750, 10},  // C
+
+    {2093, 700, 8},   // C
+    {2093, 1400, 10}, // C
+
+    {1976, 350, 8},   // B
+    {1760, 350, 8},   // A
+    {1397, 1050, 10}, // F
+
+    {1397, 700, 8}    // F
+  };
+  const int noteCount = sizeof(melody) / sizeof(melody[0]);
+
+  // Play it twice
+  for (int round = 0; round < 2; round++) {
+    for (int i = 0; i < noteCount; i++) {
+      M5.Speaker.tone(melody[i][0], melody[i][1]);
+      delay(melody[i][1] + melody[i][2]);
+    }
+    delay(300);
+  }
+  M5.Speaker.stop();
+
+  findMeActive = false;
+  drawM5Screen();
+}
+
+class CommandCharacteristicCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    std::string value = characteristic->getValue();
+
+    Serial.println("[BLE CMD] GATT write received");
+
+    if (value.empty()) {
+      Serial.println("[BLE CMD] Empty payload ignored");
+      return;
+    }
+
+    Serial.printf("[BLE CMD] Payload: %s\n", value.c_str());
+
+    if (value == "find") {
+      Serial.println("[BLE CMD] Find command received — triggering Find Me");
+      triggerFindMe();
+    } else {
+      Serial.printf("[BLE CMD] Unknown command ignored: %s\n", value.c_str());
+    }
+  }
+};
+
 static void applyAdaptiveInterval() {
   // BLE interval units are 0.625ms
   // Faster = better GATT ACK reliability but more battery drain
@@ -138,11 +205,20 @@ static void setupAckGattServer() {
   ackCharacteristic->setCallbacks(new AckCharacteristicCallbacks());
   ackCharacteristic->setValue("waiting");
 
+  commandCharacteristic = ackService->createCharacteristic(
+      COMMAND_CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_WRITE
+  );
+
+  commandCharacteristic->setCallbacks(new CommandCharacteristicCallbacks());
+  commandCharacteristic->setValue("idle");
+
   ackService->start();
 
   Serial.println("[BLE ACK] GATT service started");
   Serial.printf("[BLE ACK] Service UUID: %s\n", ACK_SERVICE_UUID);
   Serial.printf("[BLE ACK] Characteristic UUID: %s\n", ACK_CHARACTERISTIC_UUID);
+  Serial.printf("[BLE CMD] Command Characteristic UUID: %s\n", COMMAND_CHARACTERISTIC_UUID);
 }
 
 void updateAdvertising() {

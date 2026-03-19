@@ -56,11 +56,15 @@ def smooth_rssi(mac: str, rssi: int) -> int:
 parser = M5StickCNameParser()
 ACK_SERVICE_UUID        = "12345678-1234-1234-1234-1234567890ab"
 ACK_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdef"
+COMMAND_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdf0"
 
 # --- ACK state ---
 _seen_devices: dict[str, tuple] = {}    # {mac: (BLEDevice, last_seen_time)}
 _pending_checks: set[str] = set()       # routine ack requests from backend
 _emergency_checks: set[str] = set()     # emergency — blind GATT search
+
+# --- Command state ---
+_pending_commands: dict[str, str] = {}  # {mac: command_string}
 
 
 class MQTTPublisher:
@@ -98,7 +102,8 @@ class MQTTPublisher:
             logger.info(f"Connected to MQTT broker at {self.broker}:{self.port}")
             self.connected = True
             client.subscribe(f"hospital/medicine/ack_check/#", qos=1)
-            logger.info(f"Subscribed to ack check requests")
+            client.subscribe(f"hospital/medicine/command_ble/#", qos=1)
+            logger.info(f"Subscribed to ack check requests and BLE command requests")
         else:
             logger.error(f"Connection failed with code {rc}")
             self.connected = False
@@ -130,6 +135,23 @@ class MQTTPublisher:
                 if mac not in _emergency_checks:
                     _pending_checks.add(mac)
                 logger.info(f"[ACK] Routine check requested for {mac}")
+
+        elif message.topic.startswith("hospital/medicine/command_ble/"):
+            mac = message.topic.split("/")[-1].upper()
+            _pending_commands[mac] = "find"
+            logger.info(f"[CMD] BLE find requested for {mac}")
+
+    def publish_ble_command_result(self, mac: str, command: str, status: str):
+        topic = f"hospital/medicine/command_ble_result/{self.receiver_id}"
+        payload = {
+            'mac': mac,
+            'command': command,
+            'status': status,
+            'receiver_id': self.receiver_id,
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+        self.client.publish(topic, json.dumps(payload), qos=1)
+        logger.info(f"[CMD] Result: {mac} {command} -> {status}")
 
     def publish_ack_result(self, mac: str, status: str):
         topic = f"hospital/medicine/ack_result/{self.receiver_id}"
@@ -220,6 +242,23 @@ async def send_ble_ack(mac: str, publisher):
         _emergency_checks.discard(mac)
 
 
+# --- GATT Command (called ONLY when scanner is fully stopped) ---
+
+async def send_ble_command(mac: str, command: str, publisher):
+    """Send a BLE command (e.g. 'find') to a tag via GATT write. Scanner MUST be stopped."""
+    try:
+        logger.info(f"[CMD] Connecting to {mac} to send '{command}'...")
+        async with BleakClient(mac, timeout=10.0) as client:
+            await client.write_gatt_char(COMMAND_CHARACTERISTIC_UUID, command.encode())
+            logger.info(f"[CMD] SUCCESS — sent '{command}' to {mac}")
+            publisher.publish_ble_command_result(mac, command, "success")
+    except Exception as e:
+        logger.info(f"[CMD] FAILED for {mac}: {type(e).__name__}: {repr(e)}")
+        publisher.publish_ble_command_result(mac, command, "failed")
+    finally:
+        _pending_commands.pop(mac, None)
+
+
 # --- Main loop: alternating scan and ack phases ---
 
 async def scan_and_publish():
@@ -295,6 +334,15 @@ async def scan_and_publish():
             for mac in list(_emergency_checks):
                 logger.info(f"[ACK] Emergency ack for {mac}")
                 await send_ble_ack(mac, publisher)
+
+            # ========== COMMAND PHASE ==========
+            # Send BLE commands only if MAC was seen in this scan cycle
+            for mac, command in list(_pending_commands.items()):
+                if mac in scan_results:
+                    logger.info(f"[CMD] Sending BLE command '{command}' to {mac}")
+                    await send_ble_command(mac, command, publisher)
+                else:
+                    logger.info(f"[CMD] {mac} not seen this scan cycle — skipping '{command}'")
 
     except KeyboardInterrupt:
         logger.info("Stopping scanner...")

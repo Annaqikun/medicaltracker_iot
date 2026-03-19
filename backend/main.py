@@ -71,6 +71,8 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
             logger.info("Subscribed to topic: hospital/medicine/ack_result/#")
             client.subscribe("hospital/medicine/emergency/#")
             logger.info("Subscribed to topic: hospital/medicine/emergency/#")
+            client.subscribe("hospital/medicine/command_ble_result/#")
+            logger.info("Subscribed to topic: hospital/medicine/command_ble_result/#")
         else:
             logger.error(f"Failed to connect to MQTT broker: {rc}")
 
@@ -87,6 +89,8 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
         elif message.topic.startswith("hospital/medicine/emergency/"):
             if ack_orchestrator:
                 ack_orchestrator.on_emergency_message(client, userdata, message)
+        elif message.topic.startswith("hospital/medicine/command_ble_result/"):
+            logger.info(f"BLE command result: {message.payload.decode('utf-8')}")
         else:
             tracker.on_message(client, userdata, message)
 

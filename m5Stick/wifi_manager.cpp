@@ -8,6 +8,7 @@
 #include "battery.h"
 #include "timeSync.h"
 #include "ble_ack.h"
+#include "ble.h"
 
 extern const uint8_t certs_ca_crt_start[] asm("_binary_certs_ca_crt_start");
 extern const uint8_t certs_ca_crt_end[]   asm("_binary_certs_ca_crt_end");  // not used as of now
@@ -104,41 +105,7 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
         if (message == "find") {
             Serial.println("[MQTT] FIND command received");
 
-            findMeActive = true;
-            drawM5Screen();
-
-            M5.Speaker.setVolume(255);
-
-            // {frequency, duration, gap after}
-            const int melody[][3] = {
-            {1319, 400, 8},   // E
-            {1319, 400, 8},   // E
-            {1760, 350, 20},   // A
-            {1976, 350, 8},   // B
-            {2093, 750, 10}, // C
-
-            {2093, 700, 8},   // C
-            {2093, 1400, 10}, // C
-
-            {1976, 350, 8},   // B
-            {1760, 350, 8},   // A
-            {1397, 1050, 10}, // F
-
-            {1397, 700, 8}    // F
-            };
-                const int noteCount = sizeof(melody) / sizeof(melody[0]);
-
-            // Play it twice
-            for (int round = 0; round < 2; round++) {
-                for (int i = 0; i < noteCount; i++) {
-                    M5.Speaker.tone(melody[i][0], melody[i][1]);
-                    delay(melody[i][1] + melody[i][2]);
-                }
-                delay(300);
-            }
-            M5.Speaker.stop();
-            findMeActive = false;
-            drawM5Screen();
+            triggerFindMe();
 
             // Send acknowledgement
             String ackPayload = makePayload(currentTagId.c_str(), "status", "find_received");

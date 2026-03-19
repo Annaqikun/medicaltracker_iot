@@ -5,6 +5,8 @@ topic write hospital/medicine/rssi_only/#
 topic write hospital/system/rpi_status/#
 topic read hospital/medicine/ack_check/#
 topic write hospital/medicine/ack_result/#
+topic read hospital/medicine/command_ble/#
+topic write hospital/medicine/command_ble_result/#
 
 # M5Stick tags - emergency, ack, and command topics
 user m5tag
@@ -21,6 +23,8 @@ topic write hospital/medicine/command/#
 topic write hospital/system/coordinator_status
 topic write hospital/medicine/ack_check/#
 topic read hospital/medicine/ack_result/#
+topic write hospital/medicine/command_ble/#
+topic read hospital/medicine/command_ble_result/#
 
 # Dashboard - read only access to everything
 user dashboard
