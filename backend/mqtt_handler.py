@@ -50,6 +50,14 @@ class MedicineTracker:
         self._last_position_calc: Dict[str, datetime] = {}
         self._calc_lock = threading.Lock()
 
+        # Auth failure counters
+        self._auth_counters = {
+            "unknown_mac": 0,
+            "missing_hmac": 0,
+            "invalid_hmac": 0,
+        }
+        self._auth_counter_lock = threading.Lock()
+
         # Receiver positions for trilateration
         self._receiver_positions = self.settings.receiver_coordinates
 
@@ -162,6 +170,8 @@ class MedicineTracker:
             # --- Beacon registry lookup ---
             tag = tag_registry.get_tag(mac)
             if tag is None:
+                with self._auth_counter_lock:
+                    self._auth_counters["unknown_mac"] += 1
                 logger.warning(
                     f"MAC {mac} not in tag registry — dropping message "
                     f"(receiver={receiver_id})"
@@ -170,6 +180,8 @@ class MedicineTracker:
 
             # --- HMAC verification ---
             if "hmac" not in payload:
+                with self._auth_counter_lock:
+                    self._auth_counters["missing_hmac"] += 1
                 logger.warning(
                     f"No HMAC field in payload for {mac} — dropping message "
                     f"(receiver={receiver_id})"
@@ -177,6 +189,8 @@ class MedicineTracker:
                 return
 
             if not hmac_verify.verify_from_mqtt_payload(payload, tag["hmac_key"]):
+                with self._auth_counter_lock:
+                    self._auth_counters["invalid_hmac"] += 1
                 logger.warning(
                     f"Invalid HMAC for {mac} from receiver {receiver_id} — "
                     f"dropping message"
@@ -474,3 +488,8 @@ class MedicineTracker:
                     mac: len(receivers) for mac, receivers in self._buffer.items()
                 }
             }
+
+    def get_auth_stats(self) -> Dict[str, int]:
+        """Get auth failure counters."""
+        with self._auth_counter_lock:
+            return dict(self._auth_counters)

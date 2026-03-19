@@ -51,6 +51,7 @@ def init_db(db_path: str) -> None:
                 mac           TEXT PRIMARY KEY,
                 hmac_key      BLOB NOT NULL,
                 medicine_name TEXT NOT NULL,
+                tag_id        TEXT NOT NULL DEFAULT 'm5tag',
                 registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -81,20 +82,21 @@ def format_key_c_array(key: bytes) -> str:
     return "{" + elements + "}"
 
 
-def save_to_db(db_path: str, mac: str, hmac_key: bytes, medicine: str) -> None:
+def save_to_db(db_path: str, mac: str, hmac_key: bytes, medicine: str, tag_id: str = "m5tag") -> None:
     """Save a tag to the SQLite database."""
     conn = get_connection(db_path)
     try:
         conn.execute(
             """
-            INSERT INTO tags (mac, hmac_key, medicine_name)
-            VALUES (?, ?, ?)
+            INSERT INTO tags (mac, hmac_key, medicine_name, tag_id)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(mac) DO UPDATE SET
                 hmac_key      = excluded.hmac_key,
                 medicine_name = excluded.medicine_name,
+                tag_id        = excluded.tag_id,
                 registered_at = CURRENT_TIMESTAMP
             """,
-            (mac, hmac_key, medicine),
+            (mac, hmac_key, medicine, tag_id),
         )
         conn.commit()
     finally:
@@ -201,7 +203,7 @@ def cmd_flash(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     # Step 6: Register in database and publish whitelist
-    save_to_db(db_path, mac, hmac_key, medicine)
+    save_to_db(db_path, mac, hmac_key, medicine, getattr(args, 'tag_id', 'm5tag'))
 
 
     print()
@@ -228,7 +230,7 @@ def cmd_register(args: argparse.Namespace) -> None:
     init_db(db_path)
 
     hmac_key = os.urandom(32)
-    save_to_db(db_path, mac, hmac_key, medicine)
+    save_to_db(db_path, mac, hmac_key, medicine, getattr(args, 'tag_id', 'm5tag'))
 
 
     hex_str = format_key_hex(hmac_key)
@@ -403,6 +405,9 @@ def main() -> None:
     p_flash.add_argument(
         "--baud", type=int, default=115200, help="Baud rate (default: 115200)"
     )
+    p_flash.add_argument(
+        "--tag-id", default="m5tag", help="MQTT tag ID for commands (default: m5tag)"
+    )
 
     # --- register (manual, no serial) ---
     p_register = subparsers.add_parser(
@@ -413,6 +418,9 @@ def main() -> None:
     )
     p_register.add_argument(
         "--medicine", required=True, help="Medicine name (e.g. PANADOL)"
+    )
+    p_register.add_argument(
+        "--tag-id", default="m5tag", help="MQTT tag ID for commands (default: m5tag)"
     )
 
     # --- list ---

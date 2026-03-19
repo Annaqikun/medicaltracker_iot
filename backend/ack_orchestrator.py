@@ -20,23 +20,14 @@ from config import settings
 from database import Database
 import tag_registry
 
-# All M5 tags currently use "m5tag" as their MQTT tag_id.
-# TODO: add per-device tag_id to tag_registry schema for multi-tag support.
-DEFAULT_TAG_ID = "m5tag"
-
-
-def mac_to_tag_id(mac: str) -> str:
-    """Map a MAC address to its MQTT tag_id."""
-    # For now all tags share the same tag_id
-    return DEFAULT_TAG_ID
+def mac_to_tag_id(mac: str) -> Optional[str]:
+    """Look up tag_id from registry."""
+    return tag_registry.mac_to_tag_id(mac)
 
 
 def tag_id_to_mac(tag_id: str) -> Optional[str]:
-    """Map a tag_id to its MAC address. Returns first match."""
-    if tag_id == DEFAULT_TAG_ID:
-        whitelist = tag_registry.get_whitelist()
-        return whitelist[0] if whitelist else None
-    return None
+    """Look up MAC from registry."""
+    return tag_registry.tag_id_to_mac(tag_id)
 
 logger = logging.getLogger(__name__)
 

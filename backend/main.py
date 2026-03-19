@@ -305,6 +305,14 @@ async def find_tag(mac: str) -> Dict[str, str]:
     return {"status": "find command sent", "mac": mac}
 
 
+@app.get("/api/auth_stats")
+async def get_auth_stats() -> Dict[str, int]:
+    """Get HMAC auth failure counters (unknown MAC, missing HMAC, invalid HMAC)."""
+    if medicine_tracker:
+        return medicine_tracker.get_auth_stats()
+    return {}
+
+
 @app.get("/api/medicines")
 async def get_medicines() -> List[Dict[str, Any]]:
     """Get current status of all tracked medicines (raw scan data).
