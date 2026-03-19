@@ -8,17 +8,20 @@
 #include "battery.h"
 #include "timeSync.h"
 
-extern const uint8_t certs_ca_crt_start[] asm("_binary_certs_ca_crt_start");  
+extern const uint8_t certs_ca_crt_start[] asm("_binary_certs_ca_crt_start");
 extern const uint8_t certs_ca_crt_end[]   asm("_binary_certs_ca_crt_end");  // not used as of now
 
-static const char* WIFI_SSID = "azrylaptop";
-static const char* WIFI_PASSWORD = "azryhome1234";
+extern bool findMeActive;
+extern void drawM5Screen();
 
-static IPAddress MQTT_IP(192, 168, 137, 1);  // change this to your MQTT broker's IP address
-static const uint16_t MQTT_PORT = 8883;
-static const char* MQTT_PASSWORD = "password000";  // change this for each M5Stick
+static const char* WIFI_SSID = "nice_wifi";
+static const char* WIFI_PASSWORD = "3.141592";
 
-static const unsigned long WIFI_SESSION_DURATION_MS = 30000;
+static IPAddress MQTT_IP(192, 168, 0, 5);  // change this to your MQTT broker's IP address
+static const uint16_t MQTT_PORT = 1883;
+static const char* MQTT_PASSWORD = "1234";  // change this for each M5Stick
+
+static const unsigned long WIFI_SESSION_DURATION_MS = 10000;
 static const unsigned long WIFI_RETRY_INTERVAL_MS = 3000;
 static const unsigned long MQTT_RETRY_INTERVAL_MS = 3000;
 
@@ -27,8 +30,10 @@ static String currentTagId;
 static WifiSessionReason currentSessionReason = WifiSessionReason::None;
 
 // INTERNAL STATE
-static WiFiClientSecure wifiClientSecure;
-static PubSubClient mqttClient(wifiClientSecure);
+// For TLS (port 8883): uncomment WiFiClientSecure, comment WiFiClient
+// static WiFiClientSecure wifiClientSecure;
+static WiFiClient wifiPlainClient;
+static PubSubClient mqttClient(wifiPlainClient);
 
 static bool wifiSessionActive = false;
 static unsigned long wifiSessionStartMs = 0;
@@ -98,10 +103,41 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
         if (message == "find") {
             Serial.println("[MQTT] FIND command received");
 
-            // Buzzer response
-            M5.Speaker.tone(2000, 500);
-            delay(200);
-            M5.Speaker.tone(2000, 500);
+            findMeActive = true;
+            drawM5Screen();
+
+            M5.Speaker.setVolume(255);
+
+            // {frequency, duration, gap after}
+            const int melody[][3] = {
+            {1319, 400, 8},   // E
+            {1319, 400, 8},   // E
+            {1760, 350, 20},   // A
+            {1976, 350, 8},   // B
+            {2093, 750, 10}, // C
+
+            {2093, 700, 8},   // C
+            {2093, 1400, 10}, // C
+
+            {1976, 350, 8},   // B
+            {1760, 350, 8},   // A
+            {1397, 1050, 10}, // F
+
+            {1397, 700, 8}    // F
+            };
+                const int noteCount = sizeof(melody) / sizeof(melody[0]);
+
+            // Play it twice
+            for (int round = 0; round < 2; round++) {
+                for (int i = 0; i < noteCount; i++) {
+                    M5.Speaker.tone(melody[i][0], melody[i][1]);
+                    delay(melody[i][1] + melody[i][2]);
+                }
+                delay(300);
+            }
+            M5.Speaker.stop();
+            findMeActive = false;
+            drawM5Screen();
 
             // Send acknowledgement
             String ackPayload = makePayload(currentTagId.c_str(), "status", "find_received");
@@ -144,13 +180,13 @@ static void connectMqttIfNeeded() {
     Serial.println("[MQTT] Connecting...");
     Serial.printf("[MQTT] Broker: %s:%u\n", MQTT_IP.toString().c_str(), MQTT_PORT);
 
-    bool timeOk = syncTimeWithNtp();
-    if (!timeOk) {
-        Serial.println("[TIME] Cannot start TLS MQTT without valid time");
-        return;
-    }
-
-    wifiClientSecure.setInsecure();  // TLS encrypted, skip cert verify (ESP32 mbedTLS compat)
+    // TLS disabled for dev — skip NTP and cert setup
+    // bool timeOk = syncTimeWithNtp();
+    // if (!timeOk) {
+    //     Serial.println("[TIME] Cannot start TLS MQTT without valid time");
+    //     return;
+    // }
+    // wifiClientSecure.setInsecure();
 
     if (!mqttClient.connect(clientId.c_str(), currentTagId.c_str(), MQTT_PASSWORD)) {
         Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
@@ -183,7 +219,7 @@ static void connectMqttIfNeeded() {
 void initWifiModule(const char* tagId) {
     currentTagId = tagId;
 
-    wifiClientSecure.setCACert((const char*)certs_ca_crt_start);
+    // wifiClientSecure.setCACert((const char*)certs_ca_crt_start);  // disabled — using plaintext port 1883 for dev
 
     mqttClient.setServer(MQTT_IP, MQTT_PORT);
     mqttClient.setBufferSize(512);
@@ -216,8 +252,9 @@ void wifiTask() {
     }
 
     if (millis() - wifiSessionStartMs >= WIFI_SESSION_DURATION_MS) {
-        Serial.println("[WiFiModule] 30-second session ended");
+        Serial.println("[WiFiModule] Session ended");
         stopWifiSession();
+        drawM5Screen();  // refresh display back to default mode
     }
 }
 

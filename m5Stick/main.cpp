@@ -11,19 +11,69 @@
 
 static const char* TAG_ID = "m5tag";  // change this for each device
 
+bool findMeActive = false;
+
 void drawM5Screen() {
   M5.Display.clearDisplay();
   M5.Display.setCursor(0, 0);
-  M5.Display.setTextSize(1);
 
-  M5.Display.println("BLE ADV OK");
-  M5.Display.printf("MAC:\n%s\n", getMacString().c_str());
-  M5.Display.printf("MED:%s\n", getMedicineName().c_str());
-  M5.Display.printf("T:%.2fC\n", getTemperature());
-  M5.Display.printf("B:%u%%\n", getBatteryPercent());
-  M5.Display.printf("Move:%s\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY");
-  M5.Display.printf("WiFi:%s\n", isWifiConnected() ? "ON" : "OFF");
-  M5.Display.printf("MQTT:%s\n", isMqttConnected() ? "ON" : "OFF");
+  WifiSessionReason reason = getCurrentWifiSessionReason();
+
+  if (findMeActive) {
+    // FIND ME mode
+    M5.Display.setTextSize(3);
+    M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+    M5.Display.println("FIND ME!");
+    M5.Display.println();
+    M5.Display.setTextSize(2);
+    M5.Display.println(" /\\_/\\");
+    M5.Display.println("( o.o )");
+    M5.Display.println(" > ^ <");
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.println();
+    M5.Display.println("  I'm here!");
+  } else if (reason == WifiSessionReason::LostBle) {
+    // LOST BLE mode
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_RED, TFT_BLACK);
+    M5.Display.println("LOST BLE!");
+    M5.Display.println();
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.println("No scanner nearby");
+    M5.Display.println("WiFi fallback active");
+    M5.Display.println();
+    M5.Display.printf("WiFi:%s\n", isWifiConnected() ? "ON" : "OFF");
+    M5.Display.printf("MQTT:%s\n", isMqttConnected() ? "ON" : "OFF");
+    M5.Display.printf("T:%.2fC  B:%u%%\n", getTemperature(), getBatteryPercent());
+  } else if (reason == WifiSessionReason::TempAlert) {
+    // TEMP ALERT mode
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_RED, TFT_BLACK);
+    M5.Display.println("TEMP HIGH!");
+    M5.Display.println();
+    M5.Display.setTextSize(3);
+    M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+    M5.Display.printf("%.1fC\n", getTemperature());
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.println();
+    M5.Display.println("Alert sent to server");
+    M5.Display.printf("WiFi:%s MQTT:%s\n", isWifiConnected() ? "ON" : "OFF", isMqttConnected() ? "ON" : "OFF");
+  } else {
+    // DEFAULT mode
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.println("BLE ADV OK");
+    M5.Display.printf("MAC:\n%s\n", getMacString().c_str());
+    M5.Display.printf("MED:%s\n", getMedicineName().c_str());
+    M5.Display.printf("T:%.2fC\n", getTemperature());
+    M5.Display.printf("B:%u%%\n", getBatteryPercent());
+    M5.Display.printf("Move:%s\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY");
+    M5.Display.printf("WiFi:%s\n", isWifiConnected() ? "ON" : "OFF");
+    M5.Display.printf("MQTT:%s\n", isMqttConnected() ? "ON" : "OFF");
+  }
 }
 
 bool bleDirty = false;
@@ -88,10 +138,30 @@ void loop() {
     recordBleAck();
   }
 
-  if (M5.BtnB.wasPressed()) {
-    Serial.println("=== START WIFI SESSION ===");
-    startWifiSession(WifiSessionReason::Manual);
-    displayDirty = true;
+  {
+    static unsigned long lastBtnBMs = 0;
+    static int btnBPresses = 0;
+    static bool btnBPending = false;
+
+    if (M5.BtnB.wasPressed()) {
+      btnBPresses++;
+      lastBtnBMs = millis();
+      btnBPending = true;
+    }
+
+    // After 500ms window, decide: single or double press
+    if (btnBPending && (millis() - lastBtnBMs > 500)) {
+      if (btnBPresses >= 2) {
+        Serial.println("=== DOUBLE PRESS: TEMP ALERT ===");
+        startWifiSession(WifiSessionReason::TempAlert);
+      } else {
+        Serial.println("=== SINGLE PRESS: LOST BLE ===");
+        startWifiSession(WifiSessionReason::LostBle);
+      }
+      displayDirty = true;
+      btnBPresses = 0;
+      btnBPending = false;
+    }
   }
 
   if (tempTask()) {
@@ -103,6 +173,7 @@ void loop() {
     if (isHighTemp && !tempAlertActive && !isWifiSessionActive()) {
       Serial.println("[MAIN] High temperature detected -> starting Wi-Fi alert session");
       startWifiSession(WifiSessionReason::TempAlert);
+      displayDirty = true;
     }
 
     tempAlertActive = isHighTemp;
@@ -125,6 +196,7 @@ void loop() {
   if (!isWifiSessionActive() && shouldTriggerLostBleFailover()) {
     Serial.println("[MAIN] Lost BLE detected -> start Wi-Fi failover");
     startWifiSession(WifiSessionReason::LostBle);
+    displayDirty = true;
   }
 
   if (!isWifiSessionActive() && (millis() - lastPeriodicSyncMs >= PERIODIC_WIFI_SYNC_MS)) {

@@ -1,6 +1,6 @@
 #include "ble_ack.h"
 
-static const unsigned long BLE_ACK_TIMEOUT_MS = 15000;  // NOTE: Testing value. Change to 5 minutes before demo.
+static const unsigned long BLE_ACK_TIMEOUT_MS = 300000;  // 5 minutes
 
 static unsigned long trackerStartMs = 0;
 static unsigned long lastBleAckMs = 0;
