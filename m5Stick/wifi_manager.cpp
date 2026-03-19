@@ -152,27 +152,63 @@ static void connectMqttIfNeeded() {
 
     wifiClientSecure.setInsecure();  // TLS encrypted, skip cert verify (ESP32 mbedTLS compat)
 
-    if (mqttClient.connect(clientId.c_str(), currentTagId.c_str(), MQTT_PASSWORD)) {
-        Serial.println("[MQTT] Connected");
-
-        bool ok = mqttClient.subscribe(getCommandTopic().c_str());
-        Serial.printf("[MQTT] Subscribe to %s => %s\n", getCommandTopic().c_str(), ok ? "OK" : "FAILED");
-        
-        const char* statusText;
-        if (currentSessionReason == WifiSessionReason::LostBle) {
-            statusText = "lost_ble";
-        } else {
-            statusText = "wifi_mqtt_connected";
-        }
-
-        String mqttPayload =  makeStatusPayload(statusText);
-        bool yup = mqttClient.publish(getEmergencyTopic().c_str(), mqttPayload.c_str());
-
-        Serial.printf("[MQTT] Published status payload => %s\n", yup ? "OK" : "FAILED");
-        Serial.printf("[MQTT] Payload: %s\n", mqttPayload.c_str());
-    } else {
+    if (!mqttClient.connect(clientId.c_str(), currentTagId.c_str(), MQTT_PASSWORD)) {
         Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
+        return;
     }
+
+    Serial.println("[MQTT] Connected");
+
+    bool subscribed = mqttClient.subscribe(getCommandTopic().c_str());
+    Serial.printf("[MQTT] Subscribe to %s => %s\n",
+                  getCommandTopic().c_str(),
+                  subscribed ? "OK" : "FAILED");
+
+    const char* statusText = "wifi_mqtt_connected";
+
+    if (currentSessionReason == WifiSessionReason::LostBle) {
+        statusText = "lost_ble";
+    } else if (currentSessionReason == WifiSessionReason::TempAlert) {
+        statusText = "temp_high";
+    } else if (currentSessionReason == WifiSessionReason::PeriodicSync) {
+        statusText = "periodic_sync";
+    }
+
+    String mqttPayload = makeStatusPayload(statusText);
+    bool published = mqttClient.publish(getEmergencyTopic().c_str(), mqttPayload.c_str());
+    Serial.printf("[MQTT] Published status payload => %s\n", published ? "OK" : "FAILED");
+}
+
+static void handlePendingFindCommand() {
+    if (!pendingFindBuzz) {
+        return;
+    }
+
+    // SEND ACK FIRST
+    if (pendingFindAck) {
+        String ackPayload = makePayload(currentTagId.c_str(), "status", "find_received");
+        bool ok = mqttClient.publish(getAckTopic().c_str(), ackPayload.c_str());
+        Serial.printf("[MQTT] Published ACK => %s\n", ok ? "OK" : "FAILED");
+        pendingFindAck = false;
+    }
+
+    // THEN DO BUZZER
+    Serial.println("[BUZZER] Starting 5-second alert");
+    Serial.println("[BUZZER] Press BtnA to stop early");
+
+    unsigned long buzzStart = millis();
+    while (millis() - buzzStart < 5000) {
+        M5.update();
+        if (M5.BtnA.wasPressed()) {
+            Serial.println("[BUZZER] Stopped early by BtnA");
+            break;
+        }
+        M5.Speaker.tone(2000, 100);
+        delay(100);
+    }
+    M5.Speaker.stop();
+    Serial.println("[BUZZER] Alert finished");
+    pendingFindBuzz = false;
 }
 
 // PUBLIC API

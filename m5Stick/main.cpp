@@ -26,6 +26,12 @@ void drawM5Screen() {
   M5.Display.printf("MQTT:%s\n", isMqttConnected() ? "ON" : "OFF");
 }
 
+bool bleDirty = false;
+static bool tempAlertActive = false;
+
+static const unsigned long PERIODIC_WIFI_SYNC_MS = 1800000; // 30 minutes
+static unsigned long lastPeriodicSyncMs = 0;
+
 void drawSerial() {
   Serial.printf("MAC: %s\n", getMacString().c_str());
   Serial.printf("MED: %s\n", getMedicineName().c_str());
@@ -53,6 +59,11 @@ void setup() {
   setAdvertisedBatteryPercent(getBatteryPercent());
   setAdvertisedMoving(isCurrentlyMoving());
   setAdvertisedStationary(isCurrentlyStationary());
+  setAdvertisedLowBattery(getBatteryPercent() < 20);
+
+  tempAlertActive = (getTemperature() > 25.0f);
+
+  lastPeriodicSyncMs = millis();
 
   initBLE();
 
@@ -68,9 +79,6 @@ void setup() {
 
 void loop() {
   M5.update();
-
-  bool bleDirty = false;
-  bool displayDirty = false;
 
   wifiTask();
 
@@ -88,11 +96,20 @@ void loop() {
   if (tempTask()) {
     setAdvertisedTemperature(getTemperature());
     bleDirty = true;
-    displayDirty = true;
+
+    bool isHighTemp = (getTemperature() > 25.0f);
+
+    if (isHighTemp && !tempAlertActive && !isWifiSessionActive()) {
+      Serial.println("[MAIN] High temperature detected -> starting Wi-Fi alert session");
+      startWifiSession(WifiSessionReason::TempAlert);
+    }
+
+    tempAlertActive = isHighTemp;
   }
 
   if (batteryTask()) {
     setAdvertisedBatteryPercent(getBatteryPercent());
+    setAdvertisedLowBattery(getBatteryPercent() < 20);
     bleDirty = true;
     displayDirty = true;
   }
@@ -109,8 +126,16 @@ void loop() {
     startWifiSession(WifiSessionReason::LostBle);
   }
 
-  if (bleDirty) updateAdvertising();
-  if (displayDirty) drawM5Screen();
+  if (!isWifiSessionActive() && (millis() - lastPeriodicSyncMs >= PERIODIC_WIFI_SYNC_MS)) {
+      Serial.println("[MAIN] 30-minute periodic Wi-Fi sync triggered");
+      startWifiSession(WifiSessionReason::PeriodicSync);
+      lastPeriodicSyncMs = millis();
+  }
+
+  if (bleDirty && !isWifiSessionActive()) {
+    updateAdvertising();
+    bleDirty = false;
+  }
   
   delay(10);
 }
