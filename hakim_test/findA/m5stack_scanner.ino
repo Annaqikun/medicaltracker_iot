@@ -1,4 +1,4 @@
-// this is just to find A, flash to m5 using arduino 
+// this is just to find A, flash to m5 
 #include <M5StickCPlus.h>
 #include <BLEDevice.h>
 #include <BLEScan.h>
@@ -38,21 +38,17 @@ class ScanCallback : public BLEAdvertisedDeviceCallbacks {
 
             // Display on M5StickC screen
             M5.Lcd.fillScreen(BLACK);
-            M5.Lcd.setCursor(5, 10);
-            M5.Lcd.setTextSize(1);
-            M5.Lcd.printf("Target: %s", TARGET_NAME);
-
-            M5.Lcd.setCursor(5, 35);
+            M5.Lcd.setCursor(5, 5);
             M5.Lcd.setTextSize(2);
             M5.Lcd.printf("RSSI: %d", rssi);
 
-            M5.Lcd.setCursor(5, 60);
-            M5.Lcd.setTextSize(2);
-            M5.Lcd.printf("Avg:  %d", avgRSSI);
+            M5.Lcd.setCursor(5, 50);
+            M5.Lcd.setTextSize(3);
+            M5.Lcd.printf("Avg:%d", avgRSSI);
 
-            M5.Lcd.setCursor(5, 90);
-            M5.Lcd.setTextSize(1);
-            M5.Lcd.printf("Samples: %d", sampleCount);
+            M5.Lcd.setCursor(5, 105);
+            M5.Lcd.setTextSize(2);
+            M5.Lcd.printf("n=%d", sampleCount);
 
             // Also print to serial for logging
             Serial.printf("RSSI: %d  Avg: %d  Samples: %d\n", rssi, avgRSSI, sampleCount);

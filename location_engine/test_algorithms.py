@@ -11,8 +11,10 @@ Modes:
 """
 
 import argparse
+import csv
 import json
 import math
+import os
 import sys
 import threading
 import time
@@ -116,6 +118,23 @@ def print_sample(mac, fresh, heron_result, tri_result, actual=None):
     print(f"  Tri-primary   : {fmt_result(tri_result,   actual)}")
 
 
+CSV_FIELDS = [
+    "timestamp", "mac", "actual_x", "actual_y",
+    "heron_x", "heron_y", "heron_method", "heron_confidence", "heron_err",
+    "tri_x",   "tri_y",   "tri_method",   "tri_confidence",   "tri_err",
+]
+
+
+def write_csv(path, session_results):
+    write_header = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        if write_header:
+            writer.writeheader()
+        writer.writerows(session_results)
+    print(f"\nResults appended to {path} ({len(session_results)} rows)")
+
+
 def print_summary(session_results):
     if not session_results:
         return
@@ -212,10 +231,20 @@ def run_live(args, receiver_positions, record_log=None):
             actual = (ax, ay)
             print_sample(mac, fresh, heron_result, tri_result, actual)
             session_results.append({
-                "heron_err":    error_m(heron_result, actual),
-                "tri_err":      error_m(tri_result,   actual),
-                "heron_method": heron_result["method"] if heron_result else None,
-                "tri_method":   tri_result["method"]   if tri_result   else None,
+                "timestamp":        datetime.now().isoformat(),
+                "mac":              mac,
+                "actual_x":         ax,
+                "actual_y":         ay,
+                "heron_x":          heron_result["x"]          if heron_result else None,
+                "heron_y":          heron_result["y"]          if heron_result else None,
+                "heron_method":     heron_result["method"]     if heron_result else None,
+                "heron_confidence": heron_result["confidence"] if heron_result else None,
+                "heron_err":        error_m(heron_result, actual),
+                "tri_x":            tri_result["x"]            if tri_result   else None,
+                "tri_y":            tri_result["y"]            if tri_result   else None,
+                "tri_method":       tri_result["method"]       if tri_result   else None,
+                "tri_confidence":   tri_result["confidence"]   if tri_result   else None,
+                "tri_err":          error_m(tri_result,   actual),
             })
     except KeyboardInterrupt:
         stop_event.set()
@@ -228,6 +257,9 @@ def run_live(args, receiver_positions, record_log=None):
         with open(args.record, "w") as f:
             json.dump(record_log, f, indent=2)
         print(f"\nRecording saved to {args.record} ({len(record_log)} readings)")
+
+    if args.csv and session_results:
+        write_csv(args.csv, session_results)
 
 
 # Replay mode
@@ -315,6 +347,7 @@ def main():
     parser.add_argument("--interval",  type=float, default=2.0, metavar="SECONDS")
     parser.add_argument("--record",    metavar="FILE", help="Save RSSI readings to JSON")
     parser.add_argument("--replay",    metavar="FILE", help="Replay a recorded session")
+    parser.add_argument("--csv",       metavar="FILE", help="Append logged positions to CSV")
     args = parser.parse_args()
 
     receiver_positions = parse_receivers(args.receivers)
