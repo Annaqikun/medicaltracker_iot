@@ -20,15 +20,6 @@ from config import settings
 from database import Database
 import tag_registry
 
-def mac_to_tag_id(mac: str) -> Optional[str]:
-    """Look up tag_id from registry."""
-    return tag_registry.mac_to_tag_id(mac)
-
-
-def tag_id_to_mac(tag_id: str) -> Optional[str]:
-    """Look up MAC from registry."""
-    return tag_registry.tag_id_to_mac(tag_id)
-
 logger = logging.getLogger(__name__)
 
 
@@ -250,11 +241,9 @@ class AckOrchestrator:
                 logger.info(f"[ACK] Tag {mac} confirmed alive by {receiver_id}")
 
                 if should_resume and self._mqtt_client:
-                    tag_id = mac_to_tag_id(mac)
-                    if tag_id:
-                        cmd_topic = f"hospital/medicine/command/{tag_id}"
-                        self._mqtt_client.publish(cmd_topic, "resume_ble", qos=1)
-                        logger.info(f"[ACK] Sent resume_ble to {tag_id} ({mac})")
+                    cmd_topic = f"hospital/medicine/command/{mac}"
+                    self._mqtt_client.publish(cmd_topic, "resume_ble", qos=1)
+                    logger.info(f"[ACK] Sent resume_ble to {mac}")
             elif status == "failed":
                 # RPi tried and failed — only count once per check cycle
                 with self._ack_state_lock:
@@ -283,22 +272,17 @@ class AckOrchestrator:
         """Handle M5 emergency messages (e.g. lost_ble status)."""
         try:
             payload = json.loads(message.payload.decode("utf-8"))
-            tag_id = payload.get("id")
+            mac = payload.get("mac")
             status = payload.get("status")
 
-            if status == "lost_ble" and tag_id:
-                logger.info(f"[ACK] Emergency message from {tag_id}: {status}")
-                self.trigger_emergency_search_for_tag_id(tag_id)
+            if status == "lost_ble" and mac:
+                logger.info(f"[ACK] Emergency message from {mac}: {status}")
+                self.trigger_emergency_search(mac)
         except Exception as e:
             logger.error(f"[ACK] Failed to process emergency message: {e}")
 
-    def trigger_emergency_search_for_tag_id(self, tag_id: str) -> None:
-        """Immediately trigger emergency search for a tag by its tag_id."""
-        mac = tag_id_to_mac(tag_id)
-        if not mac:
-            logger.warning(f"[ACK] Unknown tag_id for emergency trigger: {tag_id}")
-            return
-
+    def trigger_emergency_search(self, mac: str) -> None:
+        """Immediately trigger emergency search for a tag by its MAC address."""
         now = datetime.utcnow()
 
         with self._ack_state_lock:
@@ -314,7 +298,7 @@ class AckOrchestrator:
             state["last_request_ts"] = now  # mark as in-flight so failures are counted
 
         self._publish_check(mac, emergency=True)
-        logger.info(f"[ACK] Forced emergency search for {tag_id} ({mac})")
+        logger.info(f"[ACK] Forced emergency search for {mac}")
 
     def get_ack_stats(self) -> Dict[str, Any]:
         """Return a snapshot of the internal ACK state for all tags.

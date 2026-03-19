@@ -60,12 +60,12 @@ static const char* reasonToString(WifiSessionReason reason) {
 
 // PAYLOAD HELPERS
 static String makePayload(const char* id, const char* key, const char* value) {
-    return "{\"id\":\"" + String(id) + "\",\"" + String(key) + "\":\"" + String(value) + "\"}";
+    return "{\"mac\":\"" + String(id) + "\",\"" + String(key) + "\":\"" + String(value) + "\"}";
 }
 
 static String makeStatusPayload(const char* statusText) {
     String payload = "{";
-    payload += "\"id\":\"" + currentTagId + "\",";
+    payload += "\"mac\":\"" + currentTagId + "\",";
     payload += "\"status\":\"" + String(statusText) + "\",";
     payload += "\"temp_c\":" + String(getTemperature(), 2) + ",";
     payload += "\"battery_percent\":" + String(getBatteryPercent());
@@ -161,7 +161,7 @@ static void connectMqttIfNeeded() {
     // }
     // wifiClientSecure.setInsecure();
 
-    if (!mqttClient.connect(clientId.c_str(), currentTagId.c_str(), MQTT_PASSWORD)) {
+    if (!mqttClient.connect(clientId.c_str(), "m5tag", MQTT_PASSWORD)) {
         Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
         return;
     }

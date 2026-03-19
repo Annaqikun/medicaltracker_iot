@@ -9,8 +9,6 @@
 #include "wifi_manager.h"
 #include "ble_ack.h"
 
-static const char* TAG_ID = "m5tag";  // change this for each device
-
 bool findMeActive = false;
 
 void drawM5Screen() {
@@ -119,7 +117,7 @@ void setup() {
 
   initBLE();
 
-  initWifiModule(TAG_ID);
+  initWifiModule(getMacString().c_str());
 
   initBleAckTracker();
 

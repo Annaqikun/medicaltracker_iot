@@ -295,12 +295,9 @@ async def find_tag(mac: str) -> Dict[str, str]:
     logger.info(f"Published BLE find command for {mac}")
 
     # WiFi fallback: direct to M5 via MQTT (if it's in WiFi mode)
-    from ack_orchestrator import mac_to_tag_id
-    tag_id = mac_to_tag_id(mac)
-    if tag_id:
-        wifi_topic = f"hospital/medicine/command/{tag_id}"
-        mqtt_client.publish(wifi_topic, "find", qos=1)
-        logger.info(f"Published WiFi find command for {tag_id}")
+    wifi_topic = f"hospital/medicine/command/{mac}"
+    mqtt_client.publish(wifi_topic, "find", qos=1)
+    logger.info(f"Published WiFi find command for {mac}")
 
     return {"status": "find command sent", "mac": mac}
 
