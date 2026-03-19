@@ -10,11 +10,11 @@ import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from config import settings
 from database import Database
-from trilaterate import rssi_to_distance, trilaterate_weighted, calculate_position_error
+import engine as eng
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,10 @@ class MedicineTracker:
         # Position calculation throttling: {mac: last_calculation_timestamp}
         self._last_position_calc: Dict[str, datetime] = {}
         self._calc_lock = threading.Lock()
+
+        # Latest position cache: {mac: {x, y, medicine, time}}
+        self._latest_positions: Dict[str, Dict[str, Any]] = {}
+        self._positions_lock = threading.Lock()
 
         # Receiver positions for trilateration
         self._receiver_positions = self.settings.receiver_coordinates
@@ -151,12 +155,8 @@ class MedicineTracker:
             battery = payload.get("battery")
             moving = payload.get("moving", False)
 
-            # Calculate distance from RSSI using hardcoded values
-            distance = rssi_to_distance(
-                rssi,
-                self.settings.rssi_reference,
-                self.settings.path_loss_exponent
-            )
+            # Smooth RSSI via Kalman filter then convert to distance
+            distance = eng.get_smoothed_distance(f"{mac}_{receiver_id}", rssi, A=-60.0, n=3.0)
 
             logger.debug(
                 f"Received from {receiver_id}: {mac} @ {rssi}dBm -> {distance:.2f}m, "
@@ -287,117 +287,105 @@ class MedicineTracker:
         """Attempt to calculate position when sufficient receivers are available.
 
         Position calculation is throttled to avoid excessive calculations.
-        Requires at least 2 receivers for weighted centroid calculation.
+        Requires at least 2 receivers.
 
         Args:
             mac: MAC address of the medicine.
             medicine: Medicine name/type.
         """
-        # Check throttling
         now = datetime.utcnow()
         with self._calc_lock:
             last_calc = self._last_position_calc.get(mac)
             if last_calc:
                 elapsed = (now - last_calc).total_seconds()
                 if elapsed < self.settings.position_calculation_interval:
-                    logger.debug(
-                        f"Position calculation throttled for {mac}, "
-                        f"{elapsed:.1f}s since last calculation"
-                    )
                     return
 
         with self._buffer_lock:
             if mac not in self._buffer:
                 return
-
             receiver_data = self._buffer[mac].copy()
 
-        # Need at least 2 receivers for trilateration
-        if len(receiver_data) < 2:
-            logger.debug(
-                f"Insufficient receivers for {mac}: {len(receiver_data)} "
-                f"(need at least 2)"
-            )
+        if len(receiver_data) < 3:
             return
 
-        # Use pre-calculated distances from buffer
-        distances: Dict[str, float] = {}
+        # Build (x, y, distance) tuples for the engine
+        receivers = []
         for receiver_id, data in receiver_data.items():
-            distances[receiver_id] = data["distance"]
+            coords = self._receiver_positions.get(receiver_id)
+            if coords is None:
+                continue
+            receivers.append((coords[0], coords[1], data["distance"]))
 
-        # Perform trilateration
-        position = trilaterate_weighted(
-            self._receiver_positions,
-            distances,
-            min_receivers=2
+        if len(receivers) < 3:
+            return
+
+        result = eng.localize(receivers)
+        if result is None:
+            return
+
+        x, y = result["x"], result["y"]
+        success = self.db.write_position(
+            mac=mac,
+            x=x,
+            y=y,
+            accuracy=0.0,
+            medicine=medicine,
+            receiver_count=len(receivers)
         )
 
-        if position:
-            x, y, z = position
-
-            # Calculate accuracy (RMSE)
-            accuracy = calculate_position_error(
-                position,
-                self._receiver_positions,
-                distances
-            )
-
-            # Store position
-            success = self.db.write_position(
-                mac=mac,
-                x=x,
-                y=y,
-                z=z,
-                accuracy=accuracy,
-                medicine=medicine,
-                receiver_count=len(receiver_data)
-            )
-
-            if success:
-                # Update last calculation time
-                with self._calc_lock:
-                    self._last_position_calc[mac] = now
-
-                # Check for position-based alerts (e.g., out of bounds)
-                self._check_position_alerts(mac, medicine, position)
+        if success:
+            with self._calc_lock:
+                self._last_position_calc[mac] = now
+            with self._positions_lock:
+                self._latest_positions[mac] = {
+                    "mac": mac,
+                    "medicine": medicine,
+                    "x": x,
+                    "y": y,
+                    "receiver_count": len(receivers),
+                    "time": now.isoformat(),
+                }
+            self._check_position_alerts(mac, medicine, x, y)
 
     def _check_position_alerts(
         self,
         mac: str,
         medicine: str,
-        position: Tuple[float, float, float]
+        x: float,
+        y: float,
     ) -> None:
         """Check if position triggers any alerts.
 
         Args:
             mac: MAC address of the medicine.
             medicine: Medicine name/type.
-            position: Calculated (x, y, z) position.
+            x: X coordinate in meters.
+            y: Y coordinate in meters.
         """
-        x, y, z = position
-
-        # Example: Alert if medicine is outside defined area
-        # This is a placeholder - adjust bounds as needed
         bounds = {
             "x_min": -5.0, "x_max": 15.0,
             "y_min": -5.0, "y_max": 15.0,
-            "z_min": 0.0, "z_max": 5.0
         }
 
         if (x < bounds["x_min"] or x > bounds["x_max"] or
-            y < bounds["y_min"] or y > bounds["y_max"] or
-            z < bounds["z_min"] or z > bounds["z_max"]):
+                y < bounds["y_min"] or y > bounds["y_max"]):
 
-            logger.warning(f"Medicine {mac} out of bounds at ({x:.2f}, {y:.2f}, {z:.2f})")
+            logger.warning(f"Medicine {mac} out of bounds at ({x:.2f}, {y:.2f})")
 
             self.db.write_alert(
                 mac=mac,
                 alert_type="out_of_bounds",
-                message=f"Medicine position ({x:.1f}, {y:.1f}, {z:.1f}) outside safe area",
+                message=f"Medicine position ({x:.1f}, {y:.1f}) outside safe area",
                 severity="critical",
                 medicine=medicine,
-                metadata={"x": x, "y": y, "z": z}
+                metadata={"x": x, "y": y}
             )
+
+    def get_latest_positions(self) -> List[Dict[str, Any]]:
+        """Return the latest calculated position for each tracked tag."""
+        with self._positions_lock:
+            return list(self._latest_positions.values())
 
     def get_buffer_stats(self) -> Dict[str, Any]:
         """Get statistics about the current buffer state.
