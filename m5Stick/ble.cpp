@@ -26,6 +26,7 @@ static uint8_t advertisedBatteryPercent = 0;
 
 static bool advertisedMoving = false;
 static bool advertisedStationary = true;
+static bool advertisedLowBattery = false;
 
 /*
 Manufacturer Data Layout:
@@ -34,10 +35,10 @@ Byte 2-7   : Device MAC address (6 bytes, raw)
 Byte 8-19  : Medicine name (12 bytes, ASCII, space padded, truncated if >12)
 Byte 20-21 : Temperature (2 bytes, signed int16, 0.01°C, big-endian hi,lo)
 Byte 22    : Battery (1 byte)
-Byte 23    : Movement flags (1 byte, bit 0 only, where 1 = moving and 0 = not moving)
+Byte 23    : Movement flags (1 byte, bit 0 = moving, bit 1 = low battery)
 Byte 24-25 : Sequence number (2 bytes, big-endian)
 */
-static std::string buildMfgData(const String& med, float temp, uint8_t battPct, bool moving) {
+static std::string buildMfgData(const String& med, float temp, uint8_t battPct, bool moving, bool lowBattery) {
   std::string s;
   s.reserve(26);
 
@@ -73,6 +74,9 @@ static std::string buildMfgData(const String& med, float temp, uint8_t battPct, 
   uint8_t flags = 0;
   if (moving) {
     flags |= 0x01; // bit0 = moving
+  }
+  if (lowBattery) {
+  flags |= 0x02; // bit1 = low battery
   }
   s.push_back((char)flags);
 
@@ -159,7 +163,8 @@ void updateAdvertising() {
   sd.setManufacturerData(buildMfgData(getMedicineName(), 
                                       advertisedTemperature, 
                                       advertisedBatteryPercent, 
-                                      advertisedMoving));
+                                      advertisedMoving,
+                                      advertisedLowBattery));
 
   adv->stop();
 
@@ -227,4 +232,8 @@ void setAdvertisedStationary(bool stationary) {
 uint16_t getLastSentSeq() {
   if (advSeq == 0) return 0;
   return advSeq - 1;
+}
+
+void setAdvertisedLowBattery(bool lowBattery) {
+  advertisedLowBattery = lowBattery;
 }

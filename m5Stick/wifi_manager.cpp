@@ -163,10 +163,15 @@ static void connectMqttIfNeeded() {
                   getCommandTopic().c_str(),
                   subscribed ? "OK" : "FAILED");
 
-    const char* statusText =
-        (currentSessionReason == WifiSessionReason::LostBle)
-            ? "lost_ble"
-            : "wifi_mqtt_connected";
+    const char* statusText = "wifi_mqtt_connected";
+
+    if (currentSessionReason == WifiSessionReason::LostBle) {
+        statusText = "lost_ble";
+    } else if (currentSessionReason == WifiSessionReason::TempAlert) {
+        statusText = "temp_high";
+    } else if (currentSessionReason == WifiSessionReason::PeriodicSync) {
+        statusText = "periodic_sync";
+    }
 
     String mqttPayload = makeStatusPayload(statusText);
     bool published = mqttClient.publish(getEmergencyTopic().c_str(), mqttPayload.c_str());

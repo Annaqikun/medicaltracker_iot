@@ -11,6 +11,12 @@
 
 static const char* TAG_ID = "m5tag01";  // change this for each device
 
+bool bleDirty = false;
+static bool tempAlertActive = false;
+
+static const unsigned long PERIODIC_WIFI_SYNC_MS = 1800000; // 30 minutes
+static unsigned long lastPeriodicSyncMs = 0;
+
 void drawSerial() {
   Serial.printf("MAC: %s\n", getMacString().c_str());
   Serial.printf("MED: %s\n", getMedicineName().c_str());
@@ -40,6 +46,11 @@ void setup() {
   setAdvertisedBatteryPercent(getBatteryPercent());
   setAdvertisedMoving(isCurrentlyMoving());
   setAdvertisedStationary(isCurrentlyStationary());
+  setAdvertisedLowBattery(getBatteryPercent() < 20);
+
+  tempAlertActive = (getTemperature() > 25.0f);
+
+  lastPeriodicSyncMs = millis();
 
   initBLE();
   initWifiModule(TAG_ID);
@@ -51,8 +62,6 @@ void setup() {
 
 void loop() {
   M5.update();
-
-  bool bleDirty = false;
 
   wifiTask();
 
@@ -69,10 +78,20 @@ void loop() {
   if (tempTask()) {
     setAdvertisedTemperature(getTemperature());
     bleDirty = true;
+
+    bool isHighTemp = (getTemperature() > 25.0f);
+
+    if (isHighTemp && !tempAlertActive && !isWifiSessionActive()) {
+      Serial.println("[MAIN] High temperature detected -> starting Wi-Fi alert session");
+      startWifiSession(WifiSessionReason::TempAlert);
+    }
+
+    tempAlertActive = isHighTemp;
   }
 
   if (batteryTask()) {
     setAdvertisedBatteryPercent(getBatteryPercent());
+    setAdvertisedLowBattery(getBatteryPercent() < 20);
     bleDirty = true;
   }
 
@@ -87,8 +106,15 @@ void loop() {
     startWifiSession(WifiSessionReason::LostBle);
   }
 
+  if (!isWifiSessionActive() && (millis() - lastPeriodicSyncMs >= PERIODIC_WIFI_SYNC_MS)) {
+      Serial.println("[MAIN] 30-minute periodic Wi-Fi sync triggered");
+      startWifiSession(WifiSessionReason::PeriodicSync);
+      lastPeriodicSyncMs = millis();
+  }
+
   if (bleDirty && !isWifiSessionActive()) {
     updateAdvertising();
+    bleDirty = false;
   }
   
   delay(10);
