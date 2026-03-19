@@ -45,6 +45,9 @@ class Settings:
     RSSI_REFERENCE = int(os.getenv("RSSI_REFERENCE", "-59"))
     PATH_LOSS_EXPONENT = float(os.getenv("PATH_LOSS_EXPONENT", "2.5"))
 
+    # Tag registry
+    TAG_DB_PATH = os.getenv("TAG_DB_PATH", "tag_registry.db")
+
     # Buffer management settings
     BUFFER_TIMEOUT_SECONDS = float(os.getenv("BUFFER_TIMEOUT_SECONDS", "10.0"))
     POSITION_CALCULATION_INTERVAL = float(os.getenv("POSITION_CALCULATION_INTERVAL", "2.0"))

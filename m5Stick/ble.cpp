@@ -1,6 +1,6 @@
 #include "ble.h"
 #include "mac.h"
-#include "med.h"
+#include "hmac.h"
 #include "ble_ack.h"
 
 #include <BLEDevice.h>
@@ -34,48 +34,54 @@ static bool advertisedStationary = true;
 static bool advertisedLowBattery = false;
 
 /*
-Manufacturer Data Layout:
+Manufacturer Data Layout (18 bytes total):
 Byte 0-1   : Company ID (0xFFFF, little-endian)
 Byte 2-7   : Device MAC address (6 bytes, raw)
-Byte 8-19  : Medicine name (12 bytes, ASCII, space padded, truncated if >12)
-Byte 20-21 : Temperature (2 bytes, signed int16, 0.01°C, big-endian hi,lo)
-Byte 22    : Battery (1 byte)
-Byte 23    : Movement flags (1 byte, bit 0 = moving, bit 1 = low battery)
-Byte 24-25 : Sequence number (2 bytes, big-endian)
+Byte 8-9   : Temperature (2 bytes, signed int16, 0.01°C, big-endian hi,lo)
+Byte 10    : Battery (1 byte)
+Byte 11    : Movement flags (1 byte, bit 0 = moving, bit 1 = low battery)
+Byte 12-13 : Sequence number (2 bytes, big-endian)
+Byte 14-17 : Truncated HMAC-SHA256 (4 bytes, computed over bytes 2-13)
 */
-static std::string buildMfgData(const String& med, float temp, uint8_t battPct, bool moving, bool lowBattery) {
+static std::string buildMfgData(float temp, uint8_t battPct, bool moving, bool lowBattery) {
   std::string s;
-  s.reserve(26);
+  s.reserve(18);
 
+  // Bytes 0-1: Company ID
   s.push_back((char)0xFF);
   s.push_back((char)0xFF);
 
+  // Bytes 2-7: MAC address
   uint8_t mac[6];
   getMacBytes(mac);
   for (int i = 0; i < 6; i++) s.push_back((char)mac[i]);
 
-  String m = med;
-  if (m.length() > 12) m = m.substring(0, 12);
-  while (m.length() < 12) m += ' ';
-  s.append(m.c_str(), 12);
-
+  // Bytes 8-9: Temperature (big-endian signed int16, units of 0.01°C)
   int16_t t100 = (int16_t)lroundf(temp * 100.0f);
   uint8_t hi = (uint8_t)((t100 >> 8) & 0xFF);
   uint8_t lo = (uint8_t)(t100 & 0xFF);
   s.push_back((char)hi);
   s.push_back((char)lo);
 
+  // Byte 10: Battery percent
   if (battPct > 100) battPct = 100;
   s.push_back((char)battPct);
 
+  // Byte 11: Movement flags (bit 0 = moving, bit 1 = low battery)
   uint8_t flags = 0;
-  if (moving) flags |= 0x01;   // bit0 = moving
-  if (lowBattery) flags |= 0x02; // bit1 = low battery
+  if (moving) flags |= 0x01;      // bit0 = moving
+  if (lowBattery) flags |= 0x02;  // bit1 = low battery
   s.push_back((char)flags);
 
+  // Bytes 12-13: Sequence number (big-endian)
   uint16_t seq = advSeq++;
   s.push_back((char)((seq >> 8) & 0xFF));
   s.push_back((char)(seq & 0xFF));
+
+  // Bytes 14-17: Truncated HMAC-SHA256 (over bytes 2-13)
+  uint8_t hmacOut[4];
+  computeHmac((const uint8_t*)s.data() + 2, 12, hmacOut);
+  for (int i = 0; i < 4; i++) s.push_back((char)hmacOut[i]);
 
   return s;
 }
@@ -227,9 +233,8 @@ void updateAdvertising() {
   ad.setName("MED_TAG");
 
   BLEAdvertisementData sd;
-  sd.setManufacturerData(buildMfgData(getMedicineName(), 
-                                      advertisedTemperature, 
-                                      advertisedBatteryPercent, 
+  sd.setManufacturerData(buildMfgData(advertisedTemperature,
+                                      advertisedBatteryPercent,
                                       advertisedMoving,
                                       advertisedLowBattery));
 

@@ -8,6 +8,7 @@ import logging
 import ssl
 import threading
 import time
+import json
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +17,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from ack_orchestrator import AckOrchestrator
+import tag_registry
 from config import settings
 from database import Database
 from mqtt_handler import MedicineTracker
@@ -33,6 +35,21 @@ medicine_tracker: Optional[MedicineTracker] = None
 ack_orchestrator: Optional[AckOrchestrator] = None
 mqtt_client: Optional[mqtt.Client] = None
 mqtt_thread: Optional[threading.Thread] = None
+
+
+WHITELIST_TOPIC = "hospital/system/whitelist"
+
+
+def publish_whitelist(client: mqtt.Client) -> None:
+    """Publish the current tag whitelist as a retained MQTT message.
+
+    RPi receivers subscribe to this topic and update their local
+    whitelist automatically.
+    """
+    whitelist = tag_registry.get_whitelist()
+    payload = json.dumps(whitelist)
+    client.publish(WHITELIST_TOPIC, payload, qos=1, retain=True)
+    logger.info(f"Published whitelist ({len(whitelist)} MACs) to {WHITELIST_TOPIC}")
 
 
 def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
@@ -73,6 +90,8 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
             logger.info("Subscribed to topic: hospital/medicine/emergency/#")
             client.subscribe("hospital/medicine/command_ble_result/#")
             logger.info("Subscribed to topic: hospital/medicine/command_ble_result/#")
+            # Publish whitelist as retained message so RPis get it immediately
+            publish_whitelist(client)
         else:
             logger.error(f"Failed to connect to MQTT broker: {rc}")
 
@@ -100,6 +119,17 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
     client.on_message = on_message
 
     return client
+
+
+def whitelist_sync_loop(client: mqtt.Client) -> None:
+    """Periodically re-publish the whitelist so RPis pick up DB changes."""
+    while True:
+        time.sleep(30)
+        try:
+            if client.is_connected():
+                publish_whitelist(client)
+        except Exception as e:
+            logger.error(f"Whitelist sync error: {e}")
 
 
 def mqtt_loop(client: mqtt.Client) -> None:
@@ -136,6 +166,13 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Medical Tracker backend...")
 
     try:
+        # Initialize tag registry
+        tag_registry.init_db()
+        registered_tags = tag_registry.get_all_tags()
+        logger.info(
+            f"Tag registry ready — {len(registered_tags)} tag(s) registered"
+        )
+
         # Initialize database
         db = Database(
             url=settings.INFLUXDB_URL,
@@ -165,6 +202,13 @@ async def lifespan(app: FastAPI):
         # Start ACK orchestrator (needs mqtt_client to be ready)
         ack_orchestrator.start(mqtt_client)
         logger.info("ACK orchestrator started")
+
+        # Start whitelist sync thread (re-publishes every 30s)
+        whitelist_thread = threading.Thread(
+            target=whitelist_sync_loop, args=(mqtt_client,), daemon=True
+        )
+        whitelist_thread.start()
+        logger.info("Whitelist sync thread started")
 
         yield
 

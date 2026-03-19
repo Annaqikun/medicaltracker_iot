@@ -18,14 +18,10 @@ import paho.mqtt.client as mqtt
 
 from config import settings
 from database import Database
+import tag_registry
 
-# TODO: replace with tag_registry.get_whitelist() after merging HMAC branch
-HARDCODED_TAGS = [
-    "4C:75:25:CB:86:62",
-]
-
-# TODO: replace with tag_registry lookup after merging HMAC branch
-# Maps MAC → MQTT tag_id (used in command topic)
+# MAC → tag_id mapping (used for MQTT command topics)
+# TODO: move to tag_registry when tag_id is added to the DB schema
 MAC_TO_TAG_ID = {
     "4C:75:25:CB:86:62": "m5tag",
 }
@@ -100,7 +96,7 @@ class AckOrchestrator:
 
     def _check_all_tags(self) -> None:
         """Run one pass of the orchestration logic for every registered MAC."""
-        macs = HARDCODED_TAGS  # TODO: use tag_registry.get_whitelist()
+        macs = tag_registry.get_whitelist()
         now = datetime.utcnow()
 
         with self._ack_state_lock:

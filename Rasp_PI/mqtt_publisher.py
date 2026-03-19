@@ -22,11 +22,10 @@ MQTT_PASSWORD = "1234"
 
 RECEIVER_ID = "rpi_a"
 
-KNOWN_MEDICINE_TAGS = [
-    "4C:75:25:CB:86:62",
-]
+KNOWN_MEDICINE_TAGS = []
 
 PUBLISH_ONLY_KNOWN_TAGS = True
+WHITELIST_TOPIC = "hospital/system/whitelist"
 COMPANY_ID = 0xFFFF
 SCAN_WINDOW_SECONDS = 5
 
@@ -103,23 +102,30 @@ class MQTTPublisher:
             self.connected = True
             client.subscribe(f"hospital/medicine/ack_check/#", qos=1)
             client.subscribe(f"hospital/medicine/command_ble/#", qos=1)
-            logger.info(f"Subscribed to ack check requests and BLE command requests")
+            client.subscribe(WHITELIST_TOPIC, qos=1)
+            logger.info(f"Subscribed to ack check requests, BLE command requests, and {WHITELIST_TOPIC}")
         else:
             logger.error(f"Connection failed with code {rc}")
             self.connected = False
 
-    def _on_publish(self, client, userdata, mid):
-        self.publish_count += 1
-
-    def _on_disconnect(self, client, userdata, rc):
-        self.connected = False
-        if rc != 0:
-            logger.warning(f"Unexpected disconnect (code {rc}), reconnecting...")
-        else:
-            logger.info("Disconnected from MQTT broker")
-
     def _on_message(self, client, userdata, message):
-        if message.topic.startswith("hospital/medicine/ack_check/"):
+        global KNOWN_MEDICINE_TAGS
+        logger.info(f"Received message on topic: {message.topic}")
+
+        if message.topic == WHITELIST_TOPIC:
+            try:
+                raw = message.payload.decode("utf-8")
+                logger.info(f"Whitelist payload: {raw}")
+                whitelist = json.loads(raw)
+                if isinstance(whitelist, list) and len(whitelist) > 0:
+                    KNOWN_MEDICINE_TAGS = [mac.upper() for mac in whitelist]
+                    logger.info(f"Whitelist updated: {KNOWN_MEDICINE_TAGS}")
+                else:
+                    logger.warning(f"Ignoring empty or invalid whitelist: {whitelist}")
+            except Exception as e:
+                logger.error(f"Failed to parse whitelist: {e}")
+
+        elif message.topic.startswith("hospital/medicine/ack_check/"):
             mac = message.topic.split("/")[-1].upper()
             try:
                 payload = json.loads(message.payload.decode("utf-8"))
@@ -140,6 +146,16 @@ class MQTTPublisher:
             mac = message.topic.split("/")[-1].upper()
             _pending_commands[mac] = "find"
             logger.info(f"[CMD] BLE find requested for {mac}")
+
+    def _on_publish(self, client, userdata, mid):
+        self.publish_count += 1
+
+    def _on_disconnect(self, client, userdata, rc):
+        self.connected = False
+        if rc != 0:
+            logger.warning(f"Unexpected disconnect (code {rc}), reconnecting...")
+        else:
+            logger.info("Disconnected from MQTT broker")
 
     def publish_ble_command_result(self, mac: str, command: str, status: str):
         topic = f"hospital/medicine/command_ble_result/{self.receiver_id}"
@@ -190,16 +206,17 @@ class MQTTPublisher:
             'rssi': rssi,
             'temperature': parsed_data['temperature'],
             'battery': parsed_data['battery'],
-            'medicine': parsed_data['medicine'],
             'sequence_number': parsed_data['sequence_number'],
             'moving': parsed_data.get('moving', False),
+            'hmac': parsed_data['hmac'],
         }
         result = self.client.publish(topic, json.dumps(payload), qos=MQTT_QOS)
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
             logger.info(
-                f"SCAN | {parsed_data['medicine']} | MAC: {mac} | "
+                f"SCAN | MAC: {mac} | "
                 f"RSSI: {rssi} dBm | Temp: {parsed_data['temperature']}C | "
-                f"Bat: {parsed_data['battery']}% | Seq: {parsed_data['sequence_number']}"
+                f"Bat: {parsed_data['battery']}% | Seq: {parsed_data['sequence_number']} | "
+                f"HMAC: {parsed_data['hmac']}"
             )
             return True
         else:

@@ -2,7 +2,7 @@
 #include <M5Unified.h>
 #include "ble.h"
 #include "mac.h"
-#include "med.h"
+#include "hmac.h"
 #include "temp.h"
 #include "battery.h"
 #include "movement.h"
@@ -20,7 +20,6 @@ void drawM5Screen() {
   WifiSessionReason reason = getCurrentWifiSessionReason();
 
   if (findMeActive) {
-    // FIND ME mode
     M5.Display.setTextSize(3);
     M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
     M5.Display.println("FIND ME!");
@@ -34,7 +33,6 @@ void drawM5Screen() {
     M5.Display.println();
     M5.Display.println("  I'm here!");
   } else if (reason == WifiSessionReason::LostBle) {
-    // LOST BLE mode
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(TFT_RED, TFT_BLACK);
     M5.Display.println("LOST BLE!");
@@ -48,7 +46,6 @@ void drawM5Screen() {
     M5.Display.printf("MQTT:%s\n", isMqttConnected() ? "ON" : "OFF");
     M5.Display.printf("T:%.2fC  B:%u%%\n", getTemperature(), getBatteryPercent());
   } else if (reason == WifiSessionReason::TempAlert) {
-    // TEMP ALERT mode
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(TFT_RED, TFT_BLACK);
     M5.Display.println("TEMP HIGH!");
@@ -62,12 +59,10 @@ void drawM5Screen() {
     M5.Display.println("Alert sent to server");
     M5.Display.printf("WiFi:%s MQTT:%s\n", isWifiConnected() ? "ON" : "OFF", isMqttConnected() ? "ON" : "OFF");
   } else {
-    // DEFAULT mode
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5.Display.println("BLE ADV OK");
     M5.Display.printf("MAC:\n%s\n", getMacString().c_str());
-    M5.Display.printf("MED:%s\n", getMedicineName().c_str());
     M5.Display.printf("T:%.2fC\n", getTemperature());
     M5.Display.printf("B:%u%%\n", getBatteryPercent());
     M5.Display.printf("Move:%s\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY");
@@ -84,7 +79,6 @@ static unsigned long lastPeriodicSyncMs = 0;
 
 void drawSerial() {
   Serial.printf("MAC: %s\n", getMacString().c_str());
-  Serial.printf("MED: %s\n", getMedicineName().c_str());
   Serial.printf("Temp(C): %.2f\n", getTemperature());
   Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
   Serial.printf("Move: %s  |a|=%.2fg\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY", getAccelMagnitude());
@@ -99,7 +93,15 @@ void setup() {
   M5.begin(cfg);
 
   Serial.begin(115200);
-  delay(3000);
+  delay(1000);
+
+  // Check if the provisioning script is talking to us over serial.
+  // If it sends "PROV_PING", we enter provisioning mode, receive the
+  // key, write it to NVS, and reboot. Otherwise we continue normally.
+  checkSerialProvisioning();
+
+  // Load HMAC key from NVS — halts if not found
+  hmacInit();
 
   initTemp();
   initBattery();
@@ -149,7 +151,6 @@ void loop() {
       btnBPending = true;
     }
 
-    // After 500ms window, decide: single or double press
     if (btnBPending && (millis() - lastBtnBMs > 500)) {
       if (btnBPresses >= 2) {
         Serial.println("=== DOUBLE PRESS: TEMP ALERT ===");

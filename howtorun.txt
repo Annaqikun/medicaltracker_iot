@@ -108,10 +108,9 @@ mosquitto -c mosquitto.conf -v
 
 
 # Subscribe over TLS using your CA cert
-mosquitto_sub -h localhost -p 8883 \
-  --cafile /etc/mosquitto/ca.crt \
-  -u dashboard -P 1234 \
-  -t "hospital/#" -v
+mosquitto_sub -h localhost -p 1883 \
+  -u rpi -P 1234 \
+  -t "hospital/medicine/rssi_only/#" -v
 
 
 # See all scan data
