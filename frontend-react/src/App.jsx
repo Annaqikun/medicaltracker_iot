@@ -4,8 +4,8 @@ const REFRESH_INTERVAL_MS = 10000;
 const WORLD_MIN_X = 0;
 const WORLD_MAX_X = 10;
 const WORLD_MIN_Y = 0;
-const WORLD_MAX_Y = 8.66;
-const FLIP_Y_AXIS = false;
+const WORLD_MAX_Y = 10.0;
+const FLIP_Y_AXIS = true;
 
 function formatBattery(value) {
     if (value === null || value === undefined) return 'N/A';
@@ -24,6 +24,22 @@ function deriveStatus(item) {
 
 function medicineLabel(item) {
     return item?.medicine || `Tag ${String(item?.mac || 'Unknown').slice(-4)}`;
+}
+
+/**
+ * Generates a stable visual offset based on the MAC address
+ * to prevent markers from stacking perfectly on top of each other.
+ */
+function getMarkerJitter(mac) {
+    if (!mac) return { x: 0, y: 0 };
+    let hash = 0;
+    for (let i = 0; i < mac.length; i++) {
+        hash = ((hash << 5) - hash) + mac.charCodeAt(i);
+    }
+    // Result is between -4 and +4 percent jitter - makes clusters much more visible
+    const xJitter = (Math.abs(hash) % 80) / 10 - 4;
+    const yJitter = (Math.abs(hash * 7) % 80) / 10 - 4;
+    return { x: xJitter, y: yJitter };
 }
 
 function markerPosition(item, index) {
@@ -45,8 +61,11 @@ function clamp(value, min, max) {
 function worldToMapPercent(x, y) {
     const normalizedX = (Number(x) - WORLD_MIN_X) / (WORLD_MAX_X - WORLD_MIN_X);
     const normalizedY = (Number(y) - WORLD_MIN_Y) / (WORLD_MAX_Y - WORLD_MIN_Y);
-    const left = clamp(normalizedX * 100, 0, 100);
-    const top = clamp((FLIP_Y_AXIS ? 1 - normalizedY : normalizedY) * 100, 0, 100);
+    
+    // Map 0-1 to a slightly inset range (4% to 96%) to prevent clipping at the edges
+    const left = clamp(normalizedX * 92 + 4, 3, 97);
+    const top = clamp((FLIP_Y_AXIS ? 1 - normalizedY : normalizedY) * 92 + 4, 3, 97);
+    
     return { x: left, y: top };
 }
 
@@ -265,26 +284,73 @@ function App() {
                     </div>
 
                     <div className="panel-body map-body" onWheel={preventWheelTracking}>
-                        <div className="zone-grid">
-                            <MapZone title="Cold Storage" className="zone-cold" />
-                            <MapZone title="Nurse Prep" className="zone-nurse" />
-                            <MapZone title="ICU Ward" className="zone-icu" />
-                            <MapZone title="Storage A" className="zone-storage" />
-                            <MapZone title="Main Corridor" className="zone-corridor" />
-                            <MapZone title="Pharmacy" className="zone-pharmacy" />
+                        <div className="map-view-container">
+                            {/* Measurement Grid with Labels */}
+                            <div className="map-grid-overlay">
+                                { /* Vertical grid lines (X) - Using same mapping as dots */ }
+                                {[...Array(11)].map((_, i) => (
+                                    <div key={`v-${i}`} className="grid-line vertical" style={{ left: `${i * 9.2 + 4}%` }}>
+                                        <span className="grid-label x-label">{i}</span>
+                                    </div>
+                                ))}
+                                { /* Horizontal grid lines (Y) */ }
+                                {[...Array(11)].map((_, i) => (
+                                    <div key={`h-${i}`} className="grid-line horizontal" style={{ top: `${(10-i) * 9.2 + 4}%` }}>
+                                        <span className="grid-label y-label">{i}</span>
+                                    </div>
+                                ))}
+                            </div>
 
+                            {/* Rooms positioned to match the 10x10 coordinate system */}
+                            {/* Uses top/left logic to match markers: (x,y) -> left:x*10, top:(10-y)*10 */}
+                            <div className="room-layer">
+                                {/* Bottom Left Area (0-4, 0-4) mapped to 4-96 scale */}
+                                <div className="map-room zone-nurse" style={{ left: '4%', top: '59.2%', width: '36.8%', height: '36.8%' }}>
+                                    <span className="room-label">Nurse Station</span>
+                                </div>
+                                {/* Center Bottom (4.5-7, 0-4) */}
+                                <div className="map-room zone-cold" style={{ left: '45.4%', top: '59.2%', width: '23%', height: '36.8%' }}>
+                                    <span className="room-label">Cold Storage</span>
+                                </div>
+                                {/* Bottom Right (7.5-10, 0-4) */}
+                                <div className="map-room zone-pharmacy" style={{ left: '73%', top: '59.2%', width: '23%', height: '36.8%' }}>
+                                    <span className="room-label">Pharmacy</span>
+                                </div>
+                                {/* Top Right Area (6-10, 5-10) */}
+                                <div className="map-room zone-icu" style={{ left: '59.2%', top: '4%', width: '36.8%', height: '46%' }}>
+                                    <span className="room-label">ICU Ward</span>
+                                </div>
+                                {/* Middle Corridor (0-5.5, 4.5-5.5) */}
+                                <div className="map-room zone-corridor" style={{ left: '4%', top: '45.4%', width: '50.6%', height: '9.2%' }}>
+                                    <span className="room-label">Main Corridor</span>
+                                </div>
+                                {/* Top Left Area (0-5.5, 6-10) */}
+                                <div className="map-room zone-storage" style={{ left: '4%', top: '4%', width: '50.6%', height: '36.8%' }}>
+                                    <span className="room-label">Storage A</span>
+                                </div>
+                            </div>
+
+                            {/* Tags Layer */}
                             <div className="marker-layer">
-                                {mapTags.map((m, idx) => {
+                                {mapTags.map((m, i) => {
                                     const coord = worldToMapPercent(m.x, m.y);
                                     const state = deriveStatus(m);
 
+                                    // Count how many tags before this one have it the same (x,y)
+                                    const stackIdx = mapTags.slice(0, i).filter(other => 
+                                        Math.abs(other.x - m.x) < 0.1 && Math.abs(other.y - m.y) < 0.1
+                                    ).length;
+
                                     return (
                                         <div
-                                            key={m.mac || idx}
+                                            key={m.mac || i}
                                             className="map-marker"
                                             style={{
                                                 left: `${coord.x}%`,
                                                 top: `${coord.y}%`,
+                                                // Stack vertically downwards from the coordinate
+                                                transform: `translateY(${stackIdx * 23}px)`,
+                                                zIndex: 200 + stackIdx,
                                                 opacity: 1,
                                             }}
                                         >

@@ -21,3 +21,6 @@ httpx>=0.25.0
 
 # CORS Middleware
 python-multipart>=0.0.6
+
+# Localization Engine
+numpy>=1.26.0

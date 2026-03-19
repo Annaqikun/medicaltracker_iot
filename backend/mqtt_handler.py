@@ -124,12 +124,16 @@ class MedicineTracker:
         try:
             # Parse topic to extract receiver_id
             # Topic format: medical/{receiver_id}/status
+            # Topic format: hospital/medicine/scan/{receiver_id}
+
             topic_parts = message.topic.split("/")
-            if len(topic_parts) < 3:
+            #if len(topic_parts) < 3:
+            if len(topic_parts) < 4:
                 logger.warning(f"Unexpected topic format: {message.topic}")
                 return
-
-            receiver_id = topic_parts[1]
+            
+            #receiver_id = topic_parts[1]
+            receiver_id = topic_parts[3]
 
             # Parse JSON payload
             payload = json.loads(message.payload.decode("utf-8"))

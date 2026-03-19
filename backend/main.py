@@ -243,27 +243,6 @@ async def get_medicines() -> List[Dict[str, Any]]:
         logger.error(f"Error querying medicines: {e}")
         raise HTTPException(status_code=500, detail="Failed to query medicines")
 
-
-@app.get("/api/positions")
-async def get_positions(hours: int = 168) -> List[Dict[str, Any]]:
-    """Get latest trilaterated positions for all tracked medicines.
-
-    Returns:
-        List of position records with fields like mac, medicine, x, y, accuracy, time.
-    """
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-
-    if hours < 1 or hours > 720:
-        raise HTTPException(status_code=400, detail="Hours must be between 1 and 720")
-
-    try:
-        return db.query_latest_positions(hours=hours)
-    except Exception as e:
-        logger.error(f"Error querying positions: {e}")
-        raise HTTPException(status_code=500, detail="Failed to query positions")
-
-
 @app.get("/api/data")
 async def get_all_data(minutes: int = 60) -> List[Dict[str, Any]]:
     """Get all raw data from InfluxDB.
