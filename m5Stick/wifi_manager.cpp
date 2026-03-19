@@ -179,38 +179,6 @@ static void connectMqttIfNeeded() {
     Serial.printf("[MQTT] Published status payload => %s\n", published ? "OK" : "FAILED");
 }
 
-static void handlePendingFindCommand() {
-    if (!pendingFindBuzz) {
-        return;
-    }
-
-    // SEND ACK FIRST
-    if (pendingFindAck) {
-        String ackPayload = makePayload(currentTagId.c_str(), "status", "find_received");
-        bool ok = mqttClient.publish(getAckTopic().c_str(), ackPayload.c_str());
-        Serial.printf("[MQTT] Published ACK => %s\n", ok ? "OK" : "FAILED");
-        pendingFindAck = false;
-    }
-
-    // THEN DO BUZZER
-    Serial.println("[BUZZER] Starting 5-second alert");
-    Serial.println("[BUZZER] Press BtnA to stop early");
-
-    unsigned long buzzStart = millis();
-    while (millis() - buzzStart < 5000) {
-        M5.update();
-        if (M5.BtnA.wasPressed()) {
-            Serial.println("[BUZZER] Stopped early by BtnA");
-            break;
-        }
-        M5.Speaker.tone(2000, 100);
-        delay(100);
-    }
-    M5.Speaker.stop();
-    Serial.println("[BUZZER] Alert finished");
-    pendingFindBuzz = false;
-}
-
 // PUBLIC API
 void initWifiModule(const char* tagId) {
     currentTagId = tagId;

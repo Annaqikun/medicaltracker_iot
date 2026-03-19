@@ -79,6 +79,7 @@ void setup() {
 
 void loop() {
   M5.update();
+  bool displayDirty = false;
 
   wifiTask();
 
@@ -136,6 +137,7 @@ void loop() {
     updateAdvertising();
     bleDirty = false;
   }
-  
+  if (displayDirty) drawM5Screen();
+
   delay(10);
 }
