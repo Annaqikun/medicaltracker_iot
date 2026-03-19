@@ -24,6 +24,13 @@ HARDCODED_TAGS = [
     "4C:75:25:CB:86:62",
 ]
 
+# TODO: replace with tag_registry lookup after merging HMAC branch
+# Maps MAC → MQTT tag_id (used in command topic)
+MAC_TO_TAG_ID = {
+    "4C:75:25:CB:86:62": "m5tag",
+}
+TAG_ID_TO_MAC = {v: k for k, v in MAC_TO_TAG_ID.items()}
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,6 +111,8 @@ class AckOrchestrator:
                         "last_success_ts": None,
                         "attempts": 0,
                         "last_request_ts": None,
+                        "lost": False,
+                        "resume_requested": False,
                     }
 
                 state = self._ack_state[mac]
@@ -124,8 +133,8 @@ class AckOrchestrator:
                         # Clear so we don't re-count this same request
                         state["last_request_ts"] = None
 
-                # --- Max attempts exceeded → alert ---
-                if state["attempts"] >= settings.ack_max_attempts:
+                # --- Max attempts exceeded → mark as lost ---
+                if state["attempts"] >= settings.ack_max_attempts and not state.get("lost"):
                     logger.warning(
                         f"[ACK] Tag {mac} potentially lost after "
                         f"{state['attempts']} failed attempts"
@@ -139,38 +148,49 @@ class AckOrchestrator:
                         ),
                         severity="critical",
                     )
-                    state["attempts"] = 0
-                    continue  # don't immediately re-request after alert
+                    state["lost"] = True
+                    state["resume_requested"] = True
 
                 # --- Decide whether to send a new check request ---
+                is_emergency = state.get("lost", False)
+
                 # Don't request if one is already pending (not yet timed out)
                 if state["last_request_ts"] is not None:
-                    continue  # request in flight, wait for timeout or result
+                    if not is_emergency:
+                        continue  # routine: wait for timeout
+                    # Emergency: re-request every check interval (10s) instead of waiting for full timeout
+                    elapsed_since_request = (now - state["last_request_ts"]).total_seconds()
+                    if elapsed_since_request < settings.ack_check_interval_seconds:
+                        continue  # too soon, wait for next loop tick
 
                 should_request = (
-                    state["last_success_ts"] is None
+                    is_emergency  # always request if lost
+                    or state["last_success_ts"] is None
                     or (now - state["last_success_ts"]).total_seconds()
                     >= settings.ack_period_seconds
                 )
 
                 if should_request:
-                    self._publish_check(mac)
+                    self._publish_check(mac, emergency=is_emergency)
                     state["last_request_ts"] = now
 
-    def _publish_check(self, mac: str) -> None:
+    def _publish_check(self, mac: str, emergency: bool = False) -> None:
         """Publish an ACK check request for *mac*.
 
         Args:
             mac: MAC address of the tag to check.
+            emergency: If True, RPis should actively search (blind GATT connect).
         """
         if self._mqtt_client is None:
             logger.warning("[ACK] Cannot publish check — MQTT client not set")
             return
 
         topic = f"hospital/medicine/ack_check/{mac}"
+        payload = json.dumps({"emergency": emergency})
         try:
-            self._mqtt_client.publish(topic, payload="{}", qos=1)
-            logger.info(f"[ACK] Published check request on {topic}")
+            self._mqtt_client.publish(topic, payload=payload, qos=1)
+            mode = "EMERGENCY" if emergency else "routine"
+            logger.info(f"[ACK] Published {mode} check request on {topic}")
         except Exception as e:
             logger.error(f"[ACK] Failed to publish check for {mac}: {e}")
 
@@ -212,20 +232,44 @@ class AckOrchestrator:
 
             if status == "success":
                 now = datetime.utcnow()
+                should_resume = False
                 with self._ack_state_lock:
                     if mac not in self._ack_state:
                         self._ack_state[mac] = {
                             "last_success_ts": None,
                             "attempts": 0,
                             "last_request_ts": None,
+                            "lost": False,
+                            "resume_requested": False,
                         }
+                    should_resume = self._ack_state[mac].get("resume_requested", False)
                     self._ack_state[mac]["last_success_ts"] = now
                     self._ack_state[mac]["attempts"] = 0
+                    self._ack_state[mac]["last_request_ts"] = None
+                    self._ack_state[mac]["lost"] = False
+                    self._ack_state[mac]["resume_requested"] = False
 
                 logger.info(f"[ACK] Tag {mac} confirmed alive by {receiver_id}")
+
+                if should_resume and self._mqtt_client:
+                    tag_id = MAC_TO_TAG_ID.get(mac)
+                    if tag_id:
+                        cmd_topic = f"hospital/medicine/command/{tag_id}"
+                        self._mqtt_client.publish(cmd_topic, "resume_ble", qos=1)
+                        logger.info(f"[ACK] Sent resume_ble to {tag_id} ({mac})")
+            elif status == "failed":
+                # RPi tried and failed — only count once per check cycle
+                with self._ack_state_lock:
+                    if mac in self._ack_state and self._ack_state[mac]["last_request_ts"] is not None:
+                        self._ack_state[mac]["attempts"] += 1
+                        self._ack_state[mac]["last_request_ts"] = None  # clear so we don't double-count
+                        logger.warning(
+                            f"[ACK] RPi {receiver_id} failed to reach {mac}, "
+                            f"attempt {self._ack_state[mac]['attempts']}"
+                        )
             else:
                 logger.debug(
-                    f"[ACK] Non-success status for {mac} from {receiver_id}: {status}"
+                    f"[ACK] Unknown status for {mac} from {receiver_id}: {status}"
                 )
 
         except json.JSONDecodeError as e:
@@ -236,6 +280,43 @@ class AckOrchestrator:
     # ------------------------------------------------------------------
     # Stats
     # ------------------------------------------------------------------
+
+    def on_emergency_message(self, client: Any, userdata: Any, message: Any) -> None:
+        """Handle M5 emergency messages (e.g. lost_ble status)."""
+        try:
+            payload = json.loads(message.payload.decode("utf-8"))
+            tag_id = payload.get("id")
+            status = payload.get("status")
+
+            if status == "lost_ble" and tag_id:
+                logger.info(f"[ACK] Emergency message from {tag_id}: {status}")
+                self.trigger_emergency_search_for_tag_id(tag_id)
+        except Exception as e:
+            logger.error(f"[ACK] Failed to process emergency message: {e}")
+
+    def trigger_emergency_search_for_tag_id(self, tag_id: str) -> None:
+        """Immediately trigger emergency search for a tag by its tag_id."""
+        mac = TAG_ID_TO_MAC.get(tag_id)
+        if not mac:
+            logger.warning(f"[ACK] Unknown tag_id for emergency trigger: {tag_id}")
+            return
+
+        now = datetime.utcnow()
+
+        with self._ack_state_lock:
+            state = self._ack_state.setdefault(mac, {
+                "last_success_ts": None,
+                "attempts": 0,
+                "last_request_ts": None,
+                "lost": False,
+                "resume_requested": False,
+            })
+            state["lost"] = True
+            state["resume_requested"] = True
+            state["last_request_ts"] = now  # mark as in-flight so failures are counted
+
+        self._publish_check(mac, emergency=True)
+        logger.info(f"[ACK] Forced emergency search for {tag_id} ({mac})")
 
     def get_ack_stats(self) -> Dict[str, Any]:
         """Return a snapshot of the internal ACK state for all tags.

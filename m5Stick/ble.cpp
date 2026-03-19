@@ -103,20 +103,15 @@ class AckCharacteristicCallbacks : public BLECharacteristicCallbacks {
 
 static void applyAdaptiveInterval() {
   // BLE interval units are 0.625ms
-  // Tune these based on your needs:
-  // - Faster = better tracking but drains battery
-  // - Slower = saves battery but less responsive
-  
+  // Faster = better GATT ACK reliability but more battery drain
+  // 320 = 200ms — good balance for ACK + tracking
   uint16_t interval;
   if (advertisedStationary) {
-    interval = 8000;  // 5000ms (5 seconds) - save battery when still
+    interval = 320;   // 200ms - reliable for GATT ACK connections
   } else {
-    // MOVING - choose your speed:
-    interval = 1600;  // 1000ms (1 second) - balanced
-    // interval = 800;   // 500ms (0.5 seconds) - real-time but drains fast
-    // interval = 3200;  // 2000ms (2 seconds) - battery saver
+    interval = 160;   // 100ms - fast tracking when moving
   }
-  
+
   adv->setMinInterval(interval);
   adv->setMaxInterval(interval);
 }

@@ -7,6 +7,7 @@
 #include "temp.h"
 #include "battery.h"
 #include "timeSync.h"
+#include "ble_ack.h"
 
 extern const uint8_t certs_ca_crt_start[] asm("_binary_certs_ca_crt_start");
 extern const uint8_t certs_ca_crt_end[]   asm("_binary_certs_ca_crt_end");  // not used as of now
@@ -144,6 +145,11 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
             mqttClient.publish(getAckTopic().c_str(), ackPayload.c_str());
 
             Serial.println("[MQTT] Sent ACK for find command");
+        } else if (message == "resume_ble") {
+            Serial.println("[MQTT] RESUME BLE command received — switching back to BLE-only");
+            recordBleAck();  // reset the ack timer so it doesn't immediately trigger lost BLE again
+            stopWifiSession();
+            drawM5Screen();
         } else {
             Serial.println("[MQTT] Unknown command received");
         }
@@ -251,10 +257,14 @@ void wifiTask() {
         mqttClient.loop();
     }
 
-    if (millis() - wifiSessionStartMs >= WIFI_SESSION_DURATION_MS) {
-        Serial.println("[WiFiModule] Session ended");
-        stopWifiSession();
-        drawM5Screen();  // refresh display back to default mode
+    // LostBle sessions stay on WiFi until backend sends "resume_ble"
+    // All other sessions use timer-based auto-stop
+    if (currentSessionReason != WifiSessionReason::LostBle) {
+        if (millis() - wifiSessionStartMs >= WIFI_SESSION_DURATION_MS) {
+            Serial.println("[WiFiModule] Session ended (timer)");
+            stopWifiSession();
+            drawM5Screen();
+        }
     }
 }
 

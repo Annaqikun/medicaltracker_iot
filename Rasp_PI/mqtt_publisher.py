@@ -23,14 +23,14 @@ MQTT_PASSWORD = "1234"
 RECEIVER_ID = "rpi_a"
 
 KNOWN_MEDICINE_TAGS = [
-    "4C:75:25:CB:7E:0A",
+    "4C:75:25:CB:86:62",
 ]
 
-PUBLISH_ONLY_KNOWN_TAGS = False
+PUBLISH_ONLY_KNOWN_TAGS = True
 COMPANY_ID = 0xFFFF
+SCAN_WINDOW_SECONDS = 5
 
 # --- Logging setup ---
-# Writes to ble_scanner.log, max 1MB per file, keeps 3 old files
 logger = logging.getLogger("ble_scanner")
 logger.setLevel(logging.INFO)
 
@@ -44,7 +44,6 @@ logger.addHandler(_file_handler)
 logger.addHandler(_console_handler)
 
 # --- RSSI Smoothing ---
-# Keeps last 5 RSSI readings per MAC and returns the average
 _rssi_history: dict[str, deque] = {}
 
 def smooth_rssi(mac: str, rssi: int) -> int:
@@ -58,8 +57,10 @@ parser = M5StickCNameParser()
 ACK_SERVICE_UUID        = "12345678-1234-1234-1234-1234567890ab"
 ACK_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdef"
 
-_seen_devices: dict[str, tuple] = {}  # {mac: (BLEDevice, last_seen_timestamp)}
-_pending_checks: set[str] = set()     # MACs that backend wants us to check
+# --- ACK state ---
+_seen_devices: dict[str, tuple] = {}    # {mac: (BLEDevice, last_seen_time)}
+_pending_checks: set[str] = set()       # routine ack requests from backend
+_emergency_checks: set[str] = set()     # emergency — blind GATT search
 
 
 class MQTTPublisher:
@@ -72,7 +73,6 @@ class MQTTPublisher:
         self.client = mqtt.Client(client_id=f"{receiver_id}_{int(time.time())}")
         if username and password:
             self.client.username_pw_set(username, password)
-        # Connection resilience: auto-reconnect after 1s, up to 30s backoff
         self.client.reconnect_delay_set(min_delay=1, max_delay=30)
 
         self.client.on_connect = self._on_connect
@@ -85,21 +85,18 @@ class MQTTPublisher:
 
     def publish_rssi(self, mac: str, rssi: int):
         topic = f"hospital/medicine/rssi_only/{mac}"
-
         payload = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'receiver_id': self.receiver_id,
             'mac': mac,
             'rssi': rssi
         }
-
         self.client.publish(topic, json.dumps(payload), qos=MQTT_QOS)
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             logger.info(f"Connected to MQTT broker at {self.broker}:{self.port}")
             self.connected = True
-            # Subscribe to ack check requests from backend
             client.subscribe(f"hospital/medicine/ack_check/#", qos=1)
             logger.info(f"Subscribed to ack check requests")
         else:
@@ -112,7 +109,6 @@ class MQTTPublisher:
     def _on_disconnect(self, client, userdata, rc):
         self.connected = False
         if rc != 0:
-            # Unexpected disconnect — paho will auto-reconnect via reconnect_delay_set
             logger.warning(f"Unexpected disconnect (code {rc}), reconnecting...")
         else:
             logger.info("Disconnected from MQTT broker")
@@ -120,8 +116,20 @@ class MQTTPublisher:
     def _on_message(self, client, userdata, message):
         if message.topic.startswith("hospital/medicine/ack_check/"):
             mac = message.topic.split("/")[-1].upper()
-            _pending_checks.add(mac)
-            logger.info(f"[ACK] Backend requested check for {mac}")
+            try:
+                payload = json.loads(message.payload.decode("utf-8"))
+                emergency = payload.get("emergency", False)
+            except Exception:
+                emergency = False
+
+            if emergency:
+                _emergency_checks.add(mac)
+                _pending_checks.discard(mac)
+                logger.info(f"[ACK] EMERGENCY search requested for {mac}")
+            else:
+                if mac not in _emergency_checks:
+                    _pending_checks.add(mac)
+                logger.info(f"[ACK] Routine check requested for {mac}")
 
     def publish_ack_result(self, mac: str, status: str):
         topic = f"hospital/medicine/ack_result/{self.receiver_id}"
@@ -145,10 +153,8 @@ class MQTTPublisher:
             while not self.connected and timeout > 0:
                 time.sleep(0.1)
                 timeout -= 0.1
-
             if not self.connected:
                 raise Exception("Connection timeout")
-
         except Exception as e:
             logger.error(f"Failed to connect to MQTT broker: {e}")
             raise
@@ -166,9 +172,7 @@ class MQTTPublisher:
             'sequence_number': parsed_data['sequence_number'],
             'moving': parsed_data.get('moving', False),
         }
-
         result = self.client.publish(topic, json.dumps(payload), qos=MQTT_QOS)
-
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
             logger.info(
                 f"SCAN | {parsed_data['medicine']} | MAC: {mac} | "
@@ -182,7 +186,6 @@ class MQTTPublisher:
 
     def publish_heartbeat(self):
         topic = f"hospital/system/rpi_status/{self.receiver_id}"
-
         payload = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'receiver_id': self.receiver_id,
@@ -190,7 +193,6 @@ class MQTTPublisher:
             'scan_count': self.publish_count,
             'status': 'online'
         }
-
         self.client.publish(topic, json.dumps(payload), qos=1)
         logger.info(f"Heartbeat | uptime: {payload['uptime']}s | scans: {self.publish_count}")
 
@@ -198,29 +200,27 @@ class MQTTPublisher:
         self.client.loop_stop()
         self.client.disconnect()
 
-_ack_attempt_count: dict[str, int] = {}
-_ack_in_progress: set[str] = set()  # prevent concurrent GATT to same MAC
 
-async def send_ble_ack(device, mac: str, publisher):
-    """Pass BLEDevice object directly — Bleak skips internal scan."""
-    if mac in _ack_in_progress:
-        return  # already connecting to this MAC
-    _ack_in_progress.add(mac)
+# --- GATT ACK (called ONLY when scanner is fully stopped) ---
 
-    _ack_attempt_count[mac] = _ack_attempt_count.get(mac, 0) + 1
-    attempt = _ack_attempt_count[mac]
+async def send_ble_ack(mac: str, publisher):
+    """GATT ack using MAC string. Scanner MUST be fully stopped before calling."""
     try:
-        async with BleakClient(device, timeout=5.0) as client:
+        logger.info(f"[ACK] Connecting to {mac}...")
+        async with BleakClient(mac, timeout=10.0) as client:
+            logger.info(f"[ACK] Connected to {mac}, writing ack char...")
             await client.write_gatt_char(ACK_CHARACTERISTIC_UUID, b"ack")
-            logger.info(f"[ACK] SUCCESS for {mac} (attempt #{attempt})")
+            logger.info(f"[ACK] Write complete — SUCCESS for {mac}")
             publisher.publish_ack_result(mac, "success")
-            _pending_checks.discard(mac)
-            _ack_attempt_count[mac] = 0
     except Exception as e:
-        logger.info(f"[ACK] FAILED for {mac} (attempt #{attempt}): {e}")
+        logger.info(f"[ACK] FAILED for {mac}: {type(e).__name__}: {repr(e)}")
+        publisher.publish_ack_result(mac, "failed")
     finally:
-        _ack_in_progress.discard(mac)
+        _pending_checks.discard(mac)
+        _emergency_checks.discard(mac)
 
+
+# --- Main loop: alternating scan and ack phases ---
 
 async def scan_and_publish():
     logger.info("=" * 60)
@@ -240,48 +240,65 @@ async def scan_and_publish():
         return
 
     logger.info("Scanning for MED_TAG devices...")
-    loop = asyncio.get_event_loop()
-    def callback(device, advertisement_data):
-        mac = device.address.upper()
-        device_name = device.name if device.name else "Unknown"
-        raw_rssi = advertisement_data.rssi
-
-        is_known_tag = mac in [tag.upper() for tag in KNOWN_MEDICINE_TAGS]
-        if PUBLISH_ONLY_KNOWN_TAGS and not is_known_tag:
-            return
-
-        if device_name == "MED_TAG":
-            _seen_devices[mac] = (device, time.time())
-            mfg_bytes = advertisement_data.manufacturer_data.get(COMPANY_ID)
-            if mfg_bytes:
-                parsed_data = parser.parse_manufacturer(mfg_bytes, mac)
-                if parsed_data:
-                    # Smooth RSSI before publishing
-                    smoothed = smooth_rssi(mac, raw_rssi)
-                    if publisher.publish_scan(mac, smoothed, parsed_data):
-                        publisher.publish_rssi(mac, smoothed)
-                        # If backend requested an ack check for this tag, fire immediately
-                        if mac in _pending_checks:
-                            asyncio.run_coroutine_threadsafe(
-                                send_ble_ack(device, mac, publisher), loop
-                            )
-
-    scanner = BleakScanner(callback, scanning_mode="active")
-    await scanner.start()
-
     last_heartbeat = time.time()
 
     try:
         while True:
-            await asyncio.sleep(1)
+            # ========== SCAN PHASE ==========
+            # BleakScanner as context manager — auto-starts, auto-stops cleanly
+            scan_results = {}
+
+            def callback(device, advertisement_data):
+                mac = device.address.upper()
+                device_name = device.name if device.name else "Unknown"
+
+                is_known_tag = mac in [tag.upper() for tag in KNOWN_MEDICINE_TAGS]
+                if PUBLISH_ONLY_KNOWN_TAGS and not is_known_tag:
+                    return
+
+                if device_name == "MED_TAG":
+                    scan_results[mac] = (device, advertisement_data)
+
+            async with BleakScanner(callback, scanning_mode="active"):
+                await asyncio.sleep(SCAN_WINDOW_SECONDS)
+            # Scanner is now FULLY STOPPED and cleaned up
+            await asyncio.sleep(3)  # give BlueZ time to fully release adapter
+
+            # Process all collected advertisements
+            for mac, (device, adv_data) in scan_results.items():
+                _seen_devices[mac] = (device, time.time())
+                raw_rssi = adv_data.rssi
+                mfg_bytes = adv_data.manufacturer_data.get(COMPANY_ID)
+                if mfg_bytes:
+                    parsed_data = parser.parse_manufacturer(mfg_bytes, mac)
+                    if parsed_data:
+                        smoothed = smooth_rssi(mac, raw_rssi)
+                        if publisher.publish_scan(mac, smoothed, parsed_data):
+                            publisher.publish_rssi(mac, smoothed)
+
+            # Heartbeat
             if time.time() - last_heartbeat >= 60:
                 publisher.publish_heartbeat()
                 last_heartbeat = time.time()
 
+            # ========== ACK PHASE ==========
+            # Scanner is fully stopped — GATT connect is safe here
+            logger.info(f"[ACK] Pending: {_pending_checks} | Emergency: {_emergency_checks} | Seen: {list(_seen_devices.keys())}")
+
+            # Routine acks — only if we saw the device this scan cycle
+            for mac in list(_pending_checks):
+                if mac in scan_results:
+                    logger.info(f"[ACK] Routine ack for {mac}")
+                    await send_ble_ack(mac, publisher)
+
+            # Emergency acks — try even if not seen (blind search)
+            for mac in list(_emergency_checks):
+                logger.info(f"[ACK] Emergency ack for {mac}")
+                await send_ble_ack(mac, publisher)
+
     except KeyboardInterrupt:
         logger.info("Stopping scanner...")
     finally:
-        await scanner.stop()
         publisher.disconnect()
         logger.info(f"Total messages published: {publisher.publish_count}")
 

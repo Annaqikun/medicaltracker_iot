@@ -52,7 +52,7 @@ class Settings:
     # ACK orchestration
     ACK_PERIOD_SECONDS = float(os.getenv("ACK_PERIOD_SECONDS", "120.0"))
     ACK_CHECK_INTERVAL_SECONDS = float(os.getenv("ACK_CHECK_INTERVAL_SECONDS", "10.0"))
-    ACK_MAX_ATTEMPTS = int(os.getenv("ACK_MAX_ATTEMPTS", "3"))
+    ACK_MAX_ATTEMPTS = int(os.getenv("ACK_MAX_ATTEMPTS", "100"))
     ACK_RESULT_TIMEOUT_SECONDS = float(os.getenv("ACK_RESULT_TIMEOUT_SECONDS", "30.0"))
 
     # For backward compatibility - nested access
