@@ -26,11 +26,20 @@ M5StickC (BLE Beacon) --> Pico W / RPi4 (BLE Scanner) --> Mosquitto (MQTT Broker
 | `hospital/system/rpi_status/{receiver_id}` | RPi heartbeat | RPi |
 | `hospital/system/coordinator_status` | Coordinator heartbeat | Main computer |
 
+## MQTT Users & ACL
+
+| User | Purpose | Permissions |
+|------|---------|-------------|
+| `rpi` | Raspberry Pi publisher | Write scans, RSSI, heartbeats |
+| `m5tag` | Shared M5Stick account (all tags) | Write emergency/ack, read commands |
+| `coordinator` | Main computer deduplicator | Read scans/emergencies, write RSSI/commands/status |
+| `dashboard` | Web dashboard (read-only) | Read all `hospital/#` topics |
+
 ---
 
 ## Step 1: Run the Automated TLS Setup Script
 
-The setup scripts generate TLS certificates, create MQTT users, configure ACL, and update `mosquitto.conf` automatically.
+The setup script generates TLS certificates, creates MQTT users (including `m5tag`), configures ACL, and updates `mosquitto.conf` automatically.
 
 ### Windows (PowerShell as Administrator)
 ```powershell
@@ -45,24 +54,20 @@ chmod +x setup_mosquitto_tls.sh && ./setup_mosquitto_tls.sh
 The script will prompt for:
 - **Broker IP** (default: `192.168.137.1` — your hotspot IP)
 - **RPi MQTT username/password** (default: `rpi` / `1234`)
+- **M5Stick shared password** (default: `password000`)
 - **Extra users** (enter `coordinator,dashboard` and set passwords for each)
 
 The script creates:
 | File | Purpose |
 |------|---------|
-| `password.txt` | MQTT user credentials (hashed) |
-| `acl.txt` | Topic access control per user |
+| `password.txt` | MQTT user credentials (hashed) — includes `rpi`, `m5tag`, and any extra users |
+| `acl` | Topic access control per user |
 | `certs/ca.crt` | CA certificate (copy to RPi + M5Stick) |
-| `certs/server.crt` | Server certificate |
+| `certs/server.crt` | Server certificate (ECDSA) |
 | `certs/server.key` | Server private key |
 | `certs/openssl_tls12.cnf` | Forces TLS 1.2 (required for ESP32) |
 
-### Add M5Stick Tag User (after running the script)
-
-All M5Sticks share one `m5tag` account:
-```powershell
-& "C:\Program Files\mosquitto\mosquitto_passwd.exe" -b password.txt m5tag password000
-```
+> **Important:** The script stops Mosquitto, deletes old certs, and regenerates everything fresh. If you re-run the script, you must copy the new `ca.crt` to all devices again.
 
 ## Step 2: Add Credentials to Code
 
@@ -80,9 +85,10 @@ self.client.tls_set(ca_certs=os.path.join(..., "certs", "ca.crt"))
 
 ### wifi_manager.cpp (M5Stick)
 ```cpp
-static const char* MQTT_PASSWORD = "password000";  // shared m5tag password
+static const char* MQTT_USER = "m5tag";
+static const char* MQTT_PASSWORD = "password000";
 ```
-The M5Stick uses the tag ID (e.g. `m5tag01`) from `main.cpp` as the MQTT username, but authenticates against the shared `m5tag` password file entry.
+All M5Sticks share the `m5tag` account. The tag ID (e.g. `m5tag01`) is set in `main.cpp` and used as the MQTT client ID, not the username.
 
 > **Note:** Update `WIFI_SSID`, `WIFI_PASSWORD`, and `MQTT_IP` in `wifi_manager.cpp` to match your hotspot.
 
@@ -91,7 +97,7 @@ The M5Stick uses the tag ID (e.g. `m5tag01`) from `main.cpp` as the MQTT usernam
 **RPi:**
 ```bash
 mkdir -p ~/iot_project/certs
-scp certs/ca.crt pi@<RPI_IP>:~/iot_project/certs/ca.crt
+scp certs/ca.crt <user>@<rpi_ip>:~/iot_project/certs/ca.crt
 ```
 
 **M5Stick:**
@@ -105,21 +111,18 @@ Start in this order:
 
 ### 1. Start Mosquitto Broker
 
-**Important:** The broker must be started with `OPENSSL_CONF` set to enforce TLS 1.2 (ESP32 mbedTLS does not support TLS 1.3).
-
+**Option A: Run as Windows service** (if `OPENSSL_CONF` was set by the script):
 ```powershell
-# Stop the Windows service first (Admin terminal)
-net stop mosquitto
+net start mosquitto
+```
 
-# Start manually with TLS 1.2 enforcement
+**Option B: Run manually with verbose logs** (recommended for debugging):
+```powershell
 $env:OPENSSL_CONF="<project_folder>\certs\openssl_tls12.cnf"
 mosquitto -c "C:\Program Files\Mosquitto\mosquitto.conf" -v
 ```
 
-Or as a Windows service (if `OPENSSL_CONF` is set as a system environment variable):
-```powershell
-net start mosquitto
-```
+> **Important:** `OPENSSL_CONF` must be set to enforce TLS 1.2. Without it, the broker uses TLS 1.3 which ESP32 cannot connect to. The setup script sets this as a system environment variable, but you may need to restart your PC for the service to pick it up.
 
 ### 2. Start Main Computer (Coordinator)
 ```powershell
@@ -238,11 +241,38 @@ sudo journalctl -u mqtt_publisher -f      # follow live logs
 
 ---
 
-## TLS Debugging Guide
+## TLS Setup & Debugging Guide
+
+This section covers the full TLS setup process and common issues encountered.
+
+### How TLS Works in This Project
+
+```
+M5Stick ---(TLS 1.2)---> Mosquitto:8883 <---(TLS 1.2)--- RPi / Coordinator
+                              |
+                         (plain MQTT)
+                              |
+                         Mosquitto:1883 <--- Pico W / local clients
+```
+
+- **Port 8883**: TLS encrypted (used by M5Stick, RPi, Coordinator)
+- **Port 1883**: Plain MQTT (used by Pico W and local testing)
+- ESP32 (M5Stick) uses mbedTLS which only supports **TLS 1.2** — the broker must be forced to use TLS 1.2 via `OPENSSL_CONF`
+- The M5Stick uses `setInsecure()` instead of `setCACert()` due to an ESP32 mbedTLS compatibility issue with self-signed CA certs. The connection is still TLS **encrypted** — it just skips server certificate verification.
+
+### Regenerating Certificates
+
+If you need to regenerate certs (e.g. changed broker IP):
+
+1. Re-run the setup script (it deletes old certs automatically)
+2. Copy the new `ca.crt` to RPi: `scp certs\ca.crt <user>@<rpi_ip>:~/iot_project/certs/ca.crt`
+3. Copy to M5Stick: `copy certs\ca.crt m5Stick\certs\ca.crt`
+4. Rebuild and reflash M5Stick firmware via PlatformIO
+5. Restart the broker
 
 ### M5Stick error: `-9984 X509 Certificate verification failed`
 
-**Cause:** The broker is using TLS 1.3 but ESP32 mbedTLS only supports TLS 1.2.
+**Cause:** The broker is using TLS 1.3 but ESP32 mbedTLS only supports TLS 1.2. This happens when `OPENSSL_CONF` is not set.
 
 **Fix:** Start the broker with `OPENSSL_CONF` set:
 ```powershell
@@ -256,8 +286,6 @@ openssl s_client -connect <BROKER_IP>:8883 -tls1_2 -CAfile certs/ca.crt 2>&1 | S
 ```
 Must show `TLSv1.2`. If it shows `TLSv1.3`, `OPENSSL_CONF` is not set.
 
-> **Note:** The M5Stick code uses `wifiClientSecure.setInsecure()` instead of `setCACert()` due to an ESP32 mbedTLS compatibility issue with self-signed CA certs. The connection is still TLS encrypted — it just skips server certificate verification.
-
 ### M5Stick error: `-1 start_ssl_client`
 
 **Cause:** The broker is not running, not listening on port 8883, or `OPENSSL_CONF` is not set.
@@ -269,15 +297,13 @@ Must show `TLSv1.2`. If it shows `TLSv1.3`, `OPENSSL_CONF` is not set.
 
 ### M5Stick error: `MQTT Connect failed, rc=5`
 
-**Cause:** MQTT authentication failed. The username is not in `password.txt`.
+**Cause:** MQTT authentication failed. The username/password is wrong or the user is not in `password.txt`.
 
-**Fix:** Add the M5Stick user:
+**Fix:** Add or re-add the M5Stick user:
 ```powershell
 & "C:\Program Files\mosquitto\mosquitto_passwd.exe" -b password.txt m5tag password000
 ```
 Then restart the broker.
-
-> The M5Stick uses the tag ID from `main.cpp` (e.g. `m5tag01`) as the MQTT username. However, the password file entry should be `m5tag` (shared account). If using per-tag accounts, add each one individually.
 
 ### RPi error: `Connection timed out` on port 8883
 
@@ -304,9 +330,23 @@ $env:OPENSSL_CONF="<project_folder>\certs\openssl_tls12.cnf"
 mosquitto -c "C:\Program Files\Mosquitto\mosquitto.conf" -v
 ```
 
+### Broker error: `Unable to load server key file` / `key values mismatch`
+
+**Cause:** The server.key and server.crt don't match (partial cert regeneration).
+
+**Fix:** Re-run the setup script to regenerate all certs fresh. Then copy the new `ca.crt` to all devices.
+
+### Broker error: `Unable to load server certificate` / `No such file or directory`
+
+**Cause:** `server.crt` was not generated. This can happen if:
+- The Mosquitto service was holding cert files open when the script tried to delete them
+- The openssl commands failed silently
+
+**Fix:** Re-run the setup script as Administrator. The script now stops Mosquitto first before regenerating certs.
+
 ### Setting OPENSSL_CONF as a system environment variable
 
-To avoid setting `$env:OPENSSL_CONF` every time, set it permanently (Admin PowerShell):
+To avoid setting `$env:OPENSSL_CONF` every time, the setup script sets it permanently. To set it manually (Admin PowerShell):
 ```powershell
 [Environment]::SetEnvironmentVariable("OPENSSL_CONF", "<project_folder>\certs\openssl_tls12.cnf", "Machine")
 ```
@@ -315,4 +355,12 @@ Then restart the Mosquitto service:
 net stop mosquitto
 net start mosquitto
 ```
-> **Note:** The service may need a full PC restart to pick up the new environment variable.
+> **Note:** You may need a full PC restart for the service to pick up the new environment variable.
+
+### Quick checklist if M5Stick can't connect
+
+1. Is the broker running? → `netstat -ano | findstr ":8883"`
+2. Is `OPENSSL_CONF` set? → `echo $env:OPENSSL_CONF` (must point to `openssl_tls12.cnf`)
+3. Is the TLS version correct? → `openssl s_client -connect <BROKER_IP>:8883 -tls1_2 -CAfile certs/ca.crt` (must show `TLSv1.2`)
+4. Is the m5tag user in password.txt? → Add with `mosquitto_passwd.exe -b password.txt m5tag password000`
+5. Did you rebuild and reflash the M5Stick after changing ca.crt?
