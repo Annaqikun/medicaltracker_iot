@@ -277,6 +277,127 @@ async def root() -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Provisioning API (USB serial)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/provision/usb")
+async def check_usb() -> Dict[str, Any]:
+    """Scan for connected USB serial devices (potential M5 tags)."""
+    import glob
+    import platform
+
+    system = platform.system()
+    if system == "Darwin":
+        ports = glob.glob("/dev/cu.usb*")
+    elif system == "Linux":
+        ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
+    else:
+        ports = []
+
+    return {
+        "ports": ports,
+        "count": len(ports),
+        "hint": "Plug in M5 via USB, then call POST /api/provision/flash"
+    }
+
+
+@app.post("/api/provision/flash")
+async def provision_flash(
+    port: str,
+    medicine_name: str,
+    tag_id: str = "m5tag",
+    baud: int = 115200,
+) -> Dict[str, Any]:
+    """Full serial provisioning: read MAC, generate key, flash NVS, register.
+
+    The M5 must be plugged in and showing the provisioning cat screen.
+    """
+    import os
+
+    try:
+        import serial
+    except ImportError:
+        raise HTTPException(status_code=500, detail="pyserial not installed on server")
+
+    # Step 1: Open serial port
+    try:
+        ser = serial.Serial(port, baud, timeout=1)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot open {port}: {e}")
+
+    import asyncio
+    await asyncio.sleep(0.5)  # let M5 settle
+
+    steps = []
+
+    try:
+        # Step 2: Send provisioning ping
+        ser.write(b"PROV_PING\n")
+        ser.flush()
+        steps.append("PROV_PING sent")
+
+        # Step 3: Wait for MAC
+        mac = None
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            line = ser.readline().decode("utf-8", errors="ignore").strip()
+            if line.startswith("PROV_MAC:"):
+                mac = line[len("PROV_MAC:"):].strip().upper()
+                break
+
+        if not mac:
+            raise HTTPException(status_code=408, detail="M5 did not respond with MAC (timeout)")
+
+        steps.append(f"MAC received: {mac}")
+
+        # Step 4: Generate key
+        hmac_key = os.urandom(32)
+        hex_key = hmac_key.hex()
+        steps.append("HMAC key generated")
+
+        # Step 5: Send key to M5
+        ser.write(f"PROV_KEY:{hex_key}\n".encode())
+        ser.flush()
+        steps.append("Key sent to M5")
+
+        # Step 6: Wait for confirmation
+        confirmed = False
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            line = ser.readline().decode("utf-8", errors="ignore").strip()
+            if line == "PROV_OK":
+                confirmed = True
+                break
+            if line.startswith("PROV_ERR:"):
+                raise HTTPException(status_code=400, detail=f"M5 error: {line}")
+
+        if not confirmed:
+            raise HTTPException(status_code=408, detail="M5 did not confirm key save (timeout)")
+
+        steps.append("M5 confirmed key saved")
+
+        # Step 7: Register in database
+        tag_registry.register_tag(mac, hmac_key, medicine_name, tag_id)
+        steps.append("Registered in tag registry")
+
+        # Step 8: Publish updated whitelist
+        if mqtt_client:
+            publish_whitelist(mqtt_client)
+            steps.append("Whitelist published")
+
+        return {
+            "status": "provisioned",
+            "mac": mac,
+            "medicine_name": medicine_name,
+            "tag_id": tag_id,
+            "steps": steps,
+        }
+
+    finally:
+        ser.close()
+
+
 @app.post("/api/find/{mac}")
 async def find_tag(mac: str) -> Dict[str, str]:
     """Send 'find' command to a tag via BLE (through RPi) or WiFi (direct MQTT).
