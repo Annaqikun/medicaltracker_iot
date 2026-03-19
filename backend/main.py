@@ -15,6 +15,7 @@ import paho.mqtt.client as mqtt
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from ack_orchestrator import AckOrchestrator
 from config import settings
 from database import Database
 from mqtt_handler import MedicineTracker
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Global instances
 db: Optional[Database] = None
 medicine_tracker: Optional[MedicineTracker] = None
+ack_orchestrator: Optional[AckOrchestrator] = None
 mqtt_client: Optional[mqtt.Client] = None
 mqtt_thread: Optional[threading.Thread] = None
 
@@ -65,6 +67,8 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
             logger.info("Connected to MQTT broker")
             client.subscribe(settings.mqtt.topic)
             logger.info(f"Subscribed to topic: {settings.mqtt.topic}")
+            client.subscribe("hospital/medicine/ack_result/#")
+            logger.info("Subscribed to topic: hospital/medicine/ack_result/#")
         else:
             logger.error(f"Failed to connect to MQTT broker: {rc}")
 
@@ -74,10 +78,17 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
     def on_subscribe(client, userdata, mid, granted_qos):
         logger.info(f"Subscribed with mid={mid}")
 
+    def on_message(client, userdata, message):
+        if message.topic.startswith("hospital/medicine/ack_result/"):
+            if ack_orchestrator:
+                ack_orchestrator.on_ack_result(client, userdata, message)
+        else:
+            tracker.on_message(client, userdata, message)
+
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_subscribe = on_subscribe
-    client.on_message = tracker.on_message
+    client.on_message = on_message
 
     return client
 
@@ -110,7 +121,7 @@ async def lifespan(app: FastAPI):
     Args:
         app: FastAPI application instance.
     """
-    global db, medicine_tracker, mqtt_client, mqtt_thread
+    global db, medicine_tracker, ack_orchestrator, mqtt_client, mqtt_thread
 
     # Startup
     logger.info("Starting Medical Tracker backend...")
@@ -130,6 +141,10 @@ async def lifespan(app: FastAPI):
         medicine_tracker.start()
         logger.info("Medicine tracker started")
 
+        # Initialize ACK orchestrator
+        ack_orchestrator = AckOrchestrator(db)
+        logger.info("ACK orchestrator initialised")
+
         # Initialize MQTT client
         mqtt_client = setup_mqtt_client(medicine_tracker)
 
@@ -137,6 +152,10 @@ async def lifespan(app: FastAPI):
         mqtt_thread = threading.Thread(target=mqtt_loop, args=(mqtt_client,), daemon=True)
         mqtt_thread.start()
         logger.info("MQTT client thread started")
+
+        # Start ACK orchestrator (needs mqtt_client to be ready)
+        ack_orchestrator.start(mqtt_client)
+        logger.info("ACK orchestrator started")
 
         yield
 
@@ -147,6 +166,10 @@ async def lifespan(app: FastAPI):
     finally:
         # Shutdown
         logger.info("Shutting down Medical Tracker backend...")
+
+        if ack_orchestrator:
+            ack_orchestrator.stop()
+            logger.info("ACK orchestrator stopped")
 
         if medicine_tracker:
             medicine_tracker.stop()
@@ -195,7 +218,8 @@ async def root() -> Dict[str, Any]:
             "/",
             "/api/medicines",
             "/api/medicine/{mac}/history",
-            "/api/alerts"
+            "/api/alerts",
+            "/api/ack_status"
         ]
     }
 
@@ -335,6 +359,18 @@ async def get_status() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error getting status: {e}")
         raise HTTPException(status_code=500, detail="Failed to get status")
+
+
+@app.get("/api/ack_status")
+async def get_ack_status() -> Dict[str, Any]:
+    """Get ACK orchestration status for all tracked tags.
+
+    Returns:
+        Dict mapping each MAC address to its ACK state.
+    """
+    if ack_orchestrator:
+        return ack_orchestrator.get_ack_stats()
+    return {}
 
 
 if __name__ == "__main__":

@@ -49,6 +49,12 @@ class Settings:
     BUFFER_TIMEOUT_SECONDS = float(os.getenv("BUFFER_TIMEOUT_SECONDS", "10.0"))
     POSITION_CALCULATION_INTERVAL = float(os.getenv("POSITION_CALCULATION_INTERVAL", "2.0"))
 
+    # ACK orchestration
+    ACK_PERIOD_SECONDS = float(os.getenv("ACK_PERIOD_SECONDS", "120.0"))
+    ACK_CHECK_INTERVAL_SECONDS = float(os.getenv("ACK_CHECK_INTERVAL_SECONDS", "10.0"))
+    ACK_MAX_ATTEMPTS = int(os.getenv("ACK_MAX_ATTEMPTS", "3"))
+    ACK_RESULT_TIMEOUT_SECONDS = float(os.getenv("ACK_RESULT_TIMEOUT_SECONDS", "30.0"))
+
     # For backward compatibility - nested access
     @property
     def mqtt(self):
@@ -97,6 +103,26 @@ class Settings:
     def position_calculation_interval(self):
         """Return position calculation interval."""
         return self.POSITION_CALCULATION_INTERVAL
+
+    @property
+    def ack_period_seconds(self):
+        """Return ACK period in seconds."""
+        return self.ACK_PERIOD_SECONDS
+
+    @property
+    def ack_check_interval_seconds(self):
+        """Return ACK check interval in seconds."""
+        return self.ACK_CHECK_INTERVAL_SECONDS
+
+    @property
+    def ack_max_attempts(self):
+        """Return maximum ACK attempts before alert."""
+        return self.ACK_MAX_ATTEMPTS
+
+    @property
+    def ack_result_timeout_seconds(self):
+        """Return ACK result timeout in seconds."""
+        return self.ACK_RESULT_TIMEOUT_SECONDS
 
 
 # Singleton instance
