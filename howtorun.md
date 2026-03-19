@@ -5,14 +5,30 @@
 ```
 M5StickC Plus2 (BLE Tag)
   ↓ BLE (18-byte HMAC-signed payload)
+  ↓ Bleak strips 2-byte Company ID — parser sees 16 bytes
 Raspberry Pi (BLE Scanner + MQTT Publisher)
-  ↓ MQTT
+  ↓ MQTT (port 1883 plaintext / 8883 TLS)
 Mosquitto Broker
   ↓ MQTT
 Backend (FastAPI + InfluxDB + ACK Orchestrator)
-  ↓ REST API
+  ↓ REST API (port 8000)
 Dashboard / Frontend
 ```
+
+### BLE Payload Layout (18 bytes total)
+
+```
+Firmware bytes:           RPi parser bytes (after Bleak strips Company ID):
+Byte 0-1:  Company ID    (stripped by Bleak)
+Byte 2-7:  MAC (6)       mfg_bytes[0:6]
+Byte 8-9:  Temp (int16)  mfg_bytes[6:8]
+Byte 10:   Battery       mfg_bytes[8]
+Byte 11:   Flags         mfg_bytes[9]   (bit0=moving, bit1=low battery)
+Byte 12-13: Seq (uint16) mfg_bytes[10:12]
+Byte 14-17: HMAC (4)     mfg_bytes[12:16]
+```
+
+> **Note:** The `main_coordinator/` directory contains a legacy experimental MQTT deduplicator. It is superseded by the backend and is NOT needed. Ignore it.
 
 ---
 
@@ -25,19 +41,21 @@ brew install mosquitto
 
 # Linux
 sudo apt install mosquitto mosquitto-clients
-
-# Windows: download from https://mosquitto.org/download/
 ```
 
 ### Create users
 ```bash
 mosquitto_passwd -c /etc/mosquitto/passwordfile rpi
+# Enter password when prompted (e.g. 1234)
 mosquitto_passwd -b /etc/mosquitto/passwordfile coordinator 1234
 mosquitto_passwd -b /etc/mosquitto/passwordfile m5tag 1234
 mosquitto_passwd -b /etc/mosquitto/passwordfile dashboard 1234
 ```
 
 ### Deploy ACL
+
+> **WARNING:** Use the root `acl` file ONLY — not `acl.txt` or `mqtt setup/acl` (those are outdated and missing critical permissions like whitelist read for RPi).
+
 ```bash
 sudo cp acl /etc/mosquitto/acl
 ```
@@ -52,7 +70,7 @@ acl_file /etc/mosquitto/acl
 listener 1883 0.0.0.0
 protocol mqtt
 
-# TLS (production)
+# TLS (production) — uncomment and set cert paths
 # listener 8883 0.0.0.0
 # cafile /etc/mosquitto/ca.crt
 # certfile /etc/mosquitto/server.crt
@@ -61,11 +79,8 @@ protocol mqtt
 
 ### Start
 ```bash
-# Linux
 sudo systemctl start mosquitto
-
-# macOS
-mosquitto -c /usr/local/etc/mosquitto/mosquitto.conf -v
+# Or: mosquitto -c /etc/mosquitto/mosquitto.conf -v
 
 # Verify
 mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 -t "hospital/#" -v
@@ -75,27 +90,38 @@ mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 -t "hospital/#" -v
 
 ## Step 2: InfluxDB
 
-### Install
+### Install & Setup
 ```bash
 # Download from https://portal.influxdata.com/downloads/
 # Start InfluxDB, open http://localhost:8086
-# Create org: "iot", bucket: "medicine_tracking"
-# Generate an API token
+# Create org: "iot"
+# Create bucket: "medicine_tracking"
+# Generate an All Access API token
 ```
 
-### Configure backend
-Edit `backend/.env`:
+### Configure backend `.env`
+
+Create/edit `backend/.env`:
 ```
+# MQTT
 MQTT_HOST=localhost
 MQTT_PORT=1883
 MQTT_USERNAME=coordinator
 MQTT_PASSWORD=1234
+# MQTT_CA_CERT=/path/to/ca.crt    # Uncomment for TLS (port 8883)
 
+# InfluxDB
 INFLUXDB_URL=http://localhost:8086
-INFLUXDB_TOKEN=<your-token>
+INFLUXDB_TOKEN=<paste-your-token-here>
 INFLUXDB_ORG=iot
 INFLUXDB_BUCKET=medicine_tracking
 ```
+
+> **IMPORTANT:** The code defaults to `MQTT_PORT=8883` (TLS) if not set in `.env`. Always set it explicitly.
+>
+> **IMPORTANT:** The `.env.example` in the repo uses `INFLUXDB_ORG=medical` and `INFLUXDB_BUCKET=tracker` — these are WRONG for this project. Use `iot` and `medicine_tracking`.
+>
+> **SECURITY:** If a real token is committed in `.env`, regenerate it before deploying.
 
 ---
 
@@ -114,17 +140,17 @@ pip install -r requirements.txt
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
+### What starts automatically:
+- Tag registry loads from `tag_registry.db`
+- MQTT connects and subscribes to: scan, emergency, ack_result, command_ble_result topics
+- ACK orchestrator loop runs every **10 seconds**, sends health checks every **2 minutes** per tag
+- Whitelist sync publishes to retained MQTT topic every 30s
+- REST API on port 8000
+
 ### Verify
 ```bash
 curl http://localhost:8000/
 ```
-
-### What starts automatically:
-- Tag registry loads from `tag_registry.db`
-- MQTT connects and subscribes to scan/emergency/ack/command topics
-- ACK orchestrator starts (health checks every 2 min per tag)
-- Whitelist sync publishes every 30s
-- REST API on port 8000
 
 ---
 
@@ -135,15 +161,25 @@ curl http://localhost:8000/
 pip install platformio
 ```
 
+### Create CA cert file (required for build)
+The build embeds a CA cert even if TLS is disabled. Create the file or the build fails:
+```bash
+mkdir -p m5Stick/certs
+# Copy your CA cert, OR create a dummy for dev:
+echo "dummy" > m5Stick/certs/ca.crt
+```
+
 ### Configure WiFi/MQTT
 Edit `m5Stick/wifi_manager.cpp`:
 ```cpp
 static const char* WIFI_SSID = "YourWiFi";
 static const char* WIFI_PASSWORD = "YourPassword";
-static IPAddress MQTT_IP(192, 168, 0, 5);  // Broker IP
+static IPAddress MQTT_IP(192, 168, 0, 5);  // Your broker IP
 static const uint16_t MQTT_PORT = 1883;
-static const char* MQTT_PASSWORD = "1234";
+static const char* MQTT_PASSWORD = "1234";  // Must match mosquitto_passwd for user "m5tag"
 ```
+
+> **Note:** The MQTT username is hardcoded as `"m5tag"` in the firmware (line ~164). It cannot be changed without editing the source. The password in `wifi_manager.cpp` must match the Mosquitto password for user `m5tag`.
 
 ### Build and flash
 ```bash
@@ -157,23 +193,36 @@ pio device monitor -b 115200
 ```
 
 ### Boot flow:
-1. Checks for serial provisioning (3s window)
-2. Loads HMAC key from NVS
-   - No key: animated cat screen, waits for provisioning
-   - Key found: starts BLE + GATT server
-3. Broadcasts HMAC-signed payload every 200ms (moving) or 1s (stationary)
+1. `checkSerialProvisioning()` — checks if `PROV_PING` is sent over serial
+2. `hmacInit()` — loads HMAC key from NVS
+   - **No key:** animated cat screen, waits **indefinitely** for serial provisioning (no timeout)
+   - **Key found:** starts BLE advertising + GATT server
+3. Initializes sensors, WiFi module, BLE ack tracker
+4. M5 uses its BLE MAC address as MQTT identity for all topics
+
+### BLE advertising intervals:
+- **Stationary:** 200ms (interval=320, units of 0.625ms)
+- **Moving:** 100ms (interval=160)
 
 ### Buttons:
-- **BtnA**: Manual BLE ack test
-- **BtnB single press**: Trigger lost BLE WiFi session
-- **BtnB double press**: Trigger temp alert WiFi session
+- **BtnA:** Manual BLE ack test
+- **BtnB single press:** Trigger lost BLE WiFi session (waits 500ms for second press)
+- **BtnB double press:** Trigger temp alert WiFi session (both presses within 500ms)
+
+### Display modes:
+- **Default:** MAC, temp, battery, movement, WiFi/MQTT status
+- **FIND ME:** Yellow text, cat face (during find command)
+- **LOST BLE:** Red text, WiFi fallback info
+- **TEMP HIGH:** Red text, large temperature reading
+- **Provisioning cat:** Animated cat waiting for serial provisioning
 
 ---
 
 ## Step 5: Provision Tags
 
-### Option A: Serial (recommended)
-M5 must be showing cat screen (no key in NVS).
+### Option A: Serial provisioning (recommended)
+
+M5 must be showing the **cat screen** (no key in NVS — either first flash or after NVS erase).
 
 ```bash
 # Check USB port
@@ -187,13 +236,18 @@ python provision.py flash \
   --tag-id "m5tag"
 ```
 
-### Option B: API
+This: reads MAC from M5 → generates 32-byte HMAC key → flashes to NVS → registers in SQLite → M5 reboots.
+
+### Option B: API provisioning
 ```bash
+# Check USB
 curl http://localhost:8000/api/provision/usb
+
+# Flash
 curl -X POST "http://localhost:8000/api/provision/flash?port=/dev/cu.usbserial-XXXX&medicine_name=PANADOL"
 ```
 
-### Option C: Manual (no USB)
+### Option C: Manual registration (no USB — key must be flashed separately)
 ```bash
 python provision.py register --mac 4C:75:25:CB:86:62 --medicine "PANADOL"
 ```
@@ -205,14 +259,27 @@ python provision.py get-key --mac 4C:75:25:CB:86:62
 python provision.py remove --mac 4C:75:25:CB:86:62
 ```
 
+Or via API:
+```bash
+curl http://localhost:8000/api/tags
+curl -X DELETE http://localhost:8000/api/tags/4C:75:25:CB:86:62
+```
+
 ---
 
 ## Step 6: Raspberry Pi (BLE Scanner)
 
-### Copy files to RPi
+### Copy ALL required files to RPi
 ```bash
-scp Rasp_PI/mqtt_publisher.py Rasp_PI/m5stick_parser.py pi@<RPI_IP>:~/iot_project/
+scp Rasp_PI/mqtt_publisher.py \
+    Rasp_PI/m5stick_parser.py \
+    Rasp_PI/requirements.txt \
+    Rasp_PI/install_service.sh \
+    Rasp_PI/mqtt_publisher.service \
+    pi@<RPI_IP>:~/iot_project/
 ```
+
+> **IMPORTANT:** All files must be in the **same directory** before running the installer.
 
 ### Install
 ```bash
@@ -220,17 +287,17 @@ ssh pi@<RPI_IP>
 cd ~/iot_project
 python3 -m venv venv
 source venv/bin/activate
-pip install bleak paho-mqtt psutil
+pip install -r requirements.txt
 ```
 
 ### Configure
 Edit `mqtt_publisher.py`:
 ```python
-MQTT_BROKER = "<broker-ip>"
-MQTT_PORT = 1883
+MQTT_BROKER = "<broker-ip>"    # Your MQTT broker IP
+MQTT_PORT = 1883               # 8883 for TLS
 MQTT_USERNAME = "rpi"
 MQTT_PASSWORD = "1234"
-RECEIVER_ID = "rpi_a"          # Unique per RPi
+RECEIVER_ID = "rpi_a"          # Unique per RPi (rpi_a, rpi_b, etc.)
 ```
 
 ### Run manually
@@ -238,13 +305,14 @@ RECEIVER_ID = "rpi_a"          # Unique per RPi
 python3 mqtt_publisher.py
 ```
 
-### Or install as service
+### Or install as service (auto-start on boot)
 ```bash
-scp Rasp_PI/install_service.sh Rasp_PI/mqtt_publisher.service pi@<RPI_IP>:~/
-ssh pi@<RPI_IP>
+cd ~/iot_project
 chmod +x install_service.sh
 sudo ./install_service.sh
 ```
+
+> **Note:** Run `install_service.sh` from the directory containing the Python files. It copies them to `/home/pi/iot_project/` and generates the systemd service file dynamically.
 
 ### Service commands
 ```bash
@@ -253,19 +321,27 @@ sudo systemctl restart mqtt_publisher
 sudo journalctl -u mqtt_publisher -f
 ```
 
+### How the RPi scanner works:
+1. Scans BLE for 5 seconds (context manager — clean start/stop)
+2. Publishes scan data to MQTT
+3. Checks for pending ACK/command requests from backend
+4. Stops scanner, executes GATT writes (ACK or find), resumes
+5. Repeat
+
 ---
 
-## Step 7: Verify
+## Step 7: Verify Everything
 
-### Check scanning works
+### Check scanning
 ```bash
-mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 -t "hospital/medicine/scan/#" -v
+mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 \
+  -t "hospital/medicine/scan/#" -v
 ```
 
 ### Check HMAC auth
 ```bash
 curl http://localhost:8000/api/auth_stats
-# {"unknown_mac": 0, "missing_hmac": 0, "invalid_hmac": 0}
+# Should show: {"unknown_mac": 0, "missing_hmac": 0, "invalid_hmac": 0}
 ```
 
 ### Check ACK health
@@ -273,23 +349,29 @@ curl http://localhost:8000/api/auth_stats
 curl http://localhost:8000/api/ack_status
 ```
 
-### Find My Tag (BLE)
+### Check system status
+```bash
+curl http://localhost:8000/api/status
+```
+
+### Find My Tag (BLE — tag in normal mode)
 ```bash
 curl -X POST http://localhost:8000/api/find/4C:75:25:CB:86:62
 ```
 
-### Find My Tag (WiFi — M5 must be in WiFi mode)
+### Find My Tag (WiFi — tag in lost BLE mode)
+Press BtnB on M5 first to enter WiFi mode, then:
 ```bash
 mosquitto_pub -h localhost -p 1883 -u coordinator -P 1234 \
   -t "hospital/medicine/command/4C:75:25:CB:86:62" -m "find"
 ```
 
-### Emergency search
+### Trigger emergency search
 ```bash
 curl -X POST http://localhost:8000/api/emergency/4C:75:25:CB:86:62
 ```
 
-### Check whitelist
+### Check whitelist sync
 ```bash
 mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 \
   -t "hospital/system/whitelist" -v
@@ -303,18 +385,18 @@ mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 \
 |--------|----------|---------|
 | GET | `/` | API info |
 | GET | `/api/tags` | List registered tags |
-| POST | `/api/tags?mac=XX&medicine_name=YY` | Register tag |
+| POST | `/api/tags?mac=XX&medicine_name=YY` | Register tag (generates key) |
 | DELETE | `/api/tags/{mac}` | Remove tag |
-| GET | `/api/provision/usb` | Scan USB ports |
-| POST | `/api/provision/flash?port=XX&medicine_name=YY` | Serial provision |
+| GET | `/api/provision/usb` | Scan USB serial ports |
+| POST | `/api/provision/flash?port=XX&medicine_name=YY` | Full serial provisioning |
 | POST | `/api/find/{mac}` | Find tag (BLE + WiFi) |
-| POST | `/api/emergency/{mac}` | Emergency search |
+| POST | `/api/emergency/{mac}` | Trigger emergency search |
 | GET | `/api/medicines` | Current medicine status |
 | GET | `/api/data?minutes=60` | Raw scan data |
 | GET | `/api/medicine/{mac}/history?hours=24` | Position history |
 | GET | `/api/alerts?severity=critical` | System alerts |
-| GET | `/api/status` | System stats |
-| GET | `/api/ack_status` | ACK orchestrator state |
+| GET | `/api/status` | System stats + MQTT connection |
+| GET | `/api/ack_status` | ACK orchestrator state per tag |
 | GET | `/api/auth_stats` | HMAC failure counters |
 
 ---
@@ -325,15 +407,16 @@ mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 \
 |-------|-----------|-----------|------------|
 | `hospital/medicine/scan/{receiver_id}` | RPi → Backend | RPi | Backend |
 | `hospital/medicine/rssi_only/{mac}` | RPi → Backend | RPi | Backend |
-| `hospital/medicine/emergency/{mac}` | M5 → Backend | M5 | Backend |
-| `hospital/medicine/command/{mac}` | Backend → M5 | Backend | M5 |
-| `hospital/medicine/ack/{mac}` | M5 → Backend | M5 | Backend |
+| `hospital/medicine/emergency/{mac}` | M5 → Backend | M5 (WiFi) | Backend |
+| `hospital/medicine/command/{mac}` | Backend → M5 | Backend | M5 (WiFi) |
 | `hospital/medicine/ack_check/{mac}` | Backend → RPi | Backend | RPi |
 | `hospital/medicine/ack_result/{receiver_id}` | RPi → Backend | RPi | Backend |
 | `hospital/medicine/command_ble/{mac}` | Backend → RPi | Backend | RPi |
 | `hospital/medicine/command_ble_result/{receiver_id}` | RPi → Backend | RPi | Backend |
 | `hospital/system/whitelist` | Backend → RPi | Backend | RPi (retained) |
 | `hospital/system/rpi_status/{receiver_id}` | RPi → Dashboard | RPi | Dashboard |
+
+> **Note:** `hospital/medicine/ack/{mac}` is published by M5 as a WiFi-path ack for find commands. The backend does NOT subscribe to this topic — it only processes `ack_result` from RPi.
 
 ---
 
@@ -342,11 +425,15 @@ mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 \
 | Problem | Solution |
 |---------|----------|
 | M5 shows cat screen | Not provisioned — run `provision.py flash` |
-| RPi no scan data | Check `MQTT_BROKER` IP and whitelist sync |
-| Backend rejects messages | Check `api/auth_stats` — re-provision if HMAC mismatch |
-| ACK keeps failing | BlueZ flaky — check `api/ack_status`, increase timeout |
-| Find not working (BLE) | Tag must be seen in RPi's current scan window |
-| Find not working (WiFi) | Tag must be in WiFi mode (BtnB or lost BLE) |
-| Whitelist not updating | Check ACL — RPi needs `read hospital/system/whitelist` |
-| MQTT denied publish | Check ACL, restart Mosquitto after changes |
-| InfluxDB 401 | Regenerate token in InfluxDB UI, update `.env` |
+| M5 build fails with missing `ca.crt` | Create `m5Stick/certs/ca.crt` (even a dummy file works for dev) |
+| RPi no scan data | Check MQTT_BROKER IP, whitelist sync, `PUBLISH_ONLY_KNOWN_TAGS` |
+| RPi whitelist empty | Check ACL — use root `acl` file, NOT `acl.txt` |
+| Backend rejects all messages | Check `api/auth_stats` — HMAC key mismatch means re-provision |
+| ACK keeps failing | BlueZ is flaky — check `api/ack_status` for success rate |
+| Find not working (BLE) | Tag must be seen in RPi's current 5s scan window |
+| Find not working (WiFi) | M5 must be in WiFi mode (BtnB or lost BLE timeout) |
+| Whitelist not updating | Check ACL — RPi user needs `read hospital/system/whitelist` |
+| MQTT "denied publish" in broker logs | Check ACL matches the root `acl` file, restart Mosquitto |
+| InfluxDB 401 Unauthorized | Token expired — regenerate in InfluxDB UI, update `.env` |
+| InfluxDB writes fail with 404 | Bucket name wrong — use `medicine_tracking`, not `tracker` |
+| Backend connects on wrong port | Set `MQTT_PORT=1883` explicitly in `.env` (code defaults to 8883) |
