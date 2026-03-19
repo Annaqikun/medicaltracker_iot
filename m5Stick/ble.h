@@ -19,12 +19,4 @@ void setAdvertisedMoving(bool moving);
 void setAdvertisedStationary(bool stationary);
 
 // get the last sent advertising sequence number
-<<<<<<< HEAD
 uint16_t getLastSentSeq();
-=======
-uint16_t getLastSentSeq();
-
-// Fully stop and deinitialize BLE before Wi-Fi/TLS
-// Recovery is handled via ESP.restart() after the Wi-Fi session.
-void stopBLE();
->>>>>>> origin/PersonA

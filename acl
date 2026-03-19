@@ -1,8 +1,8 @@
-# RPi Zone A
+# RPi - can publish scans, RSSI, and heartbeats
 user rpi
-topic write hospital/medicine/scan/rpi
+topic write hospital/medicine/scan/#
 topic write hospital/medicine/rssi_only/#
-topic write hospital/system/rpi_status/rpi
+topic write hospital/system/rpi_status/#
 
 # M5Stick tags - emergency, ack, and command topics
 user m5tag

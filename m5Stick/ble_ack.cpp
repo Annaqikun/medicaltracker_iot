@@ -1,10 +1,6 @@
 #include "ble_ack.h"
 
-<<<<<<< HEAD
 static const unsigned long BLE_ACK_TIMEOUT_MS = 15000;  // NOTE: Testing value. Change to 5 minutes before demo.
-=======
-static const unsigned long BLE_ACK_TIMEOUT_MS = 30000;  // NOTE: Testing value. Change to 5 minutes before demo.
->>>>>>> origin/PersonA
 
 static unsigned long trackerStartMs = 0;
 static unsigned long lastBleAckMs = 0;
@@ -38,7 +34,6 @@ bool shouldTriggerLostBleFailover() {
         return false;
     }
 
-<<<<<<< HEAD
     if (millis() - lastBleAckMs >= BLE_ACK_TIMEOUT_MS) {
         lostBleState = true;
         lostBleFailoverTriggered = true;
@@ -46,19 +41,6 @@ bool shouldTriggerLostBleFailover() {
         Serial.println("[BLE ACK] Ack timeout -> LOST BLE");
         return true;
     }
-=======
-    if (!bleAckReceived) {
-        return false;
-    }
-
-    if (millis() - lastBleAckMs >= BLE_ACK_TIMEOUT_MS) {
-        lostBleState = true;
-        lostBleFailoverTriggered = true;
-        Serial.println("[BLE ACK] Ack timeout -> LOST BLE");
-        return true;
-    }
-
->>>>>>> origin/PersonA
     return false;
 }
 

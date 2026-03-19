@@ -9,7 +9,6 @@
 #include "wifi_manager.h"
 #include "ble_ack.h"
 
-<<<<<<< HEAD
 static const char* TAG_ID = "m5tag";  // change this for each device
 
 void drawM5Screen() {
@@ -26,9 +25,6 @@ void drawM5Screen() {
   M5.Display.printf("WiFi:%s\n", isWifiConnected() ? "ON" : "OFF");
   M5.Display.printf("MQTT:%s\n", isMqttConnected() ? "ON" : "OFF");
 }
-=======
-static const char* TAG_ID = "m5tag01";  // change this for each device
->>>>>>> origin/PersonA
 
 void drawSerial() {
   Serial.printf("MAC: %s\n", getMacString().c_str());
@@ -36,24 +32,15 @@ void drawSerial() {
   Serial.printf("Temp(C): %.2f\n", getTemperature());
   Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
   Serial.printf("Move: %s  |a|=%.2fg\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY", getAccelMagnitude());
-<<<<<<< HEAD
   Serial.printf("Seq: %u\n", getLastSentSeq());
   Serial.printf("WiFi session: %s\n", isWifiSessionActive() ? "ACTIVE" : "INACTIVE");
   Serial.printf("WiFi link: %s\n", isWifiConnected() ? "CONNECTED" : "DISCONNECTED");
   Serial.printf("MQTT: %s\n", isMqttConnected() ? "CONNECTED" : "DISCONNECTED");
-=======
->>>>>>> origin/PersonA
 }
 
 void setup() {
   auto cfg = M5.config();
-  cfg.internal_spk = true;
   M5.begin(cfg);
-
-  M5.Speaker.begin();
-  M5.Speaker.setVolume(128);
-  M5.Speaker.setAllChannelVolume(255);
-  M5.Speaker.setChannelVolume(0, 255);
 
   Serial.begin(115200);
   delay(3000);
@@ -68,17 +55,12 @@ void setup() {
   setAdvertisedStationary(isCurrentlyStationary());
 
   initBLE();
-<<<<<<< HEAD
 
   initWifiModule(TAG_ID);
 
   initBleAckTracker();
 
   drawM5Screen();
-=======
-  initWifiModule(TAG_ID);
-  initBleAckTracker();
->>>>>>> origin/PersonA
 
   Serial.println("Advertising started");
   drawSerial();
@@ -88,8 +70,7 @@ void loop() {
   M5.update();
 
   bool bleDirty = false;
-
-  wifiTask();
+  bool displayDirty = false;
 
   wifiTask();
 
@@ -101,26 +82,26 @@ void loop() {
   if (M5.BtnB.wasPressed()) {
     Serial.println("=== START WIFI SESSION ===");
     startWifiSession(WifiSessionReason::Manual);
-<<<<<<< HEAD
     displayDirty = true;
-=======
->>>>>>> origin/PersonA
   }
 
   if (tempTask()) {
     setAdvertisedTemperature(getTemperature());
     bleDirty = true;
+    displayDirty = true;
   }
 
   if (batteryTask()) {
     setAdvertisedBatteryPercent(getBatteryPercent());
     bleDirty = true;
+    displayDirty = true;
   }
 
   if (movementTask()) {
     setAdvertisedMoving(isCurrentlyMoving());
     setAdvertisedStationary(isCurrentlyStationary());
     bleDirty = true;
+    displayDirty = true;
   }
 
   if (!isWifiSessionActive() && shouldTriggerLostBleFailover()) {
@@ -128,14 +109,8 @@ void loop() {
     startWifiSession(WifiSessionReason::LostBle);
   }
 
-<<<<<<< HEAD
   if (bleDirty) updateAdvertising();
   if (displayDirty) drawM5Screen();
-=======
-  if (bleDirty && !isWifiSessionActive()) {
-    updateAdvertising();
-  }
->>>>>>> origin/PersonA
   
   delay(10);
 }
