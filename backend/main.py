@@ -277,6 +277,34 @@ async def root() -> Dict[str, Any]:
     }
 
 
+@app.post("/api/find/{mac}")
+async def find_tag(mac: str) -> Dict[str, str]:
+    """Send 'find' command to a tag via BLE (through RPi) or WiFi (direct MQTT).
+
+    Publishes to command_ble topic for RPi to relay via GATT.
+    Also publishes to WiFi command topic as fallback if tag is in WiFi mode.
+    """
+    if mqtt_client is None:
+        raise HTTPException(status_code=503, detail="MQTT not available")
+
+    mac = mac.upper()
+
+    # BLE path: RPi relays via GATT
+    ble_topic = f"hospital/medicine/command_ble/{mac}"
+    mqtt_client.publish(ble_topic, "find", qos=1)
+    logger.info(f"Published BLE find command for {mac}")
+
+    # WiFi fallback: direct to M5 via MQTT (if it's in WiFi mode)
+    from ack_orchestrator import mac_to_tag_id
+    tag_id = mac_to_tag_id(mac)
+    if tag_id:
+        wifi_topic = f"hospital/medicine/command/{tag_id}"
+        mqtt_client.publish(wifi_topic, "find", qos=1)
+        logger.info(f"Published WiFi find command for {tag_id}")
+
+    return {"status": "find command sent", "mac": mac}
+
+
 @app.get("/api/medicines")
 async def get_medicines() -> List[Dict[str, Any]]:
     """Get current status of all tracked medicines (raw scan data).

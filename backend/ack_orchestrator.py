@@ -20,12 +20,23 @@ from config import settings
 from database import Database
 import tag_registry
 
-# MAC → tag_id mapping (used for MQTT command topics)
-# TODO: move to tag_registry when tag_id is added to the DB schema
-MAC_TO_TAG_ID = {
-    "4C:75:25:CB:86:62": "m5tag",
-}
-TAG_ID_TO_MAC = {v: k for k, v in MAC_TO_TAG_ID.items()}
+# All M5 tags currently use "m5tag" as their MQTT tag_id.
+# TODO: add per-device tag_id to tag_registry schema for multi-tag support.
+DEFAULT_TAG_ID = "m5tag"
+
+
+def mac_to_tag_id(mac: str) -> str:
+    """Map a MAC address to its MQTT tag_id."""
+    # For now all tags share the same tag_id
+    return DEFAULT_TAG_ID
+
+
+def tag_id_to_mac(tag_id: str) -> Optional[str]:
+    """Map a tag_id to its MAC address. Returns first match."""
+    if tag_id == DEFAULT_TAG_ID:
+        whitelist = tag_registry.get_whitelist()
+        return whitelist[0] if whitelist else None
+    return None
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +259,7 @@ class AckOrchestrator:
                 logger.info(f"[ACK] Tag {mac} confirmed alive by {receiver_id}")
 
                 if should_resume and self._mqtt_client:
-                    tag_id = MAC_TO_TAG_ID.get(mac)
+                    tag_id = mac_to_tag_id(mac)
                     if tag_id:
                         cmd_topic = f"hospital/medicine/command/{tag_id}"
                         self._mqtt_client.publish(cmd_topic, "resume_ble", qos=1)
@@ -292,7 +303,7 @@ class AckOrchestrator:
 
     def trigger_emergency_search_for_tag_id(self, tag_id: str) -> None:
         """Immediately trigger emergency search for a tag by its tag_id."""
-        mac = TAG_ID_TO_MAC.get(tag_id)
+        mac = tag_id_to_mac(tag_id)
         if not mac:
             logger.warning(f"[ACK] Unknown tag_id for emergency trigger: {tag_id}")
             return

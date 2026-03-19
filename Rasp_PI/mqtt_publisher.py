@@ -117,11 +117,11 @@ class MQTTPublisher:
                 raw = message.payload.decode("utf-8")
                 logger.info(f"Whitelist payload: {raw}")
                 whitelist = json.loads(raw)
-                if isinstance(whitelist, list) and len(whitelist) > 0:
+                if isinstance(whitelist, list):
                     KNOWN_MEDICINE_TAGS = [mac.upper() for mac in whitelist]
-                    logger.info(f"Whitelist updated: {KNOWN_MEDICINE_TAGS}")
+                    logger.info(f"Whitelist updated ({len(KNOWN_MEDICINE_TAGS)} MACs): {KNOWN_MEDICINE_TAGS}")
                 else:
-                    logger.warning(f"Ignoring empty or invalid whitelist: {whitelist}")
+                    logger.warning(f"Invalid whitelist format: {whitelist}")
             except Exception as e:
                 logger.error(f"Failed to parse whitelist: {e}")
 
