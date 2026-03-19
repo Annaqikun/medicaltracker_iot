@@ -3,6 +3,7 @@ user rpi
 topic write hospital/medicine/scan/rpi
 topic write hospital/medicine/rssi_only/#
 topic write hospital/system/rpi_status/rpi
+topic read hospital/system/whitelist
 
 
 
@@ -12,18 +13,21 @@ user rpi4_zone_a
 topic write hospital/medicine/scan/rpi4_zone_a
 topic write hospital/medicine/rssi_only/#
 topic write hospital/system/rpi_status/rpi4_zone_a
+topic read hospital/system/whitelist
 
 # Pico 1 - can publish scans, RSSI, and heartbeats
 user pico_1
 topic write hospital/medicine/scan/pico_1
 topic write hospital/medicine/rssi_only/#
 topic write hospital/system/pico_status/pico_1
+topic read hospital/system/whitelist
 
 # Pico 2 - can publish scans, RSSI, and heartbeats
 user pico_2
 topic write hospital/medicine/scan/pico_2
 topic write hospital/medicine/rssi_only/#
 topic write hospital/system/pico_status/pico_2
+topic read hospital/system/whitelist
 
 # Coordinator (main_computer) - can read scans, publish deduplicated data and status
 user coordinator

@@ -29,6 +29,7 @@ from pathlib import Path
 # Default database path relative to this script
 DEFAULT_DB_PATH = str(Path(__file__).parent / "backend" / "tag_registry.db")
 
+
 # MAC address pattern: six groups of two hex digits separated by colons
 MAC_PATTERN = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
@@ -199,8 +200,9 @@ def cmd_flash(args: argparse.Namespace) -> None:
         print("Error: M5 did not confirm key was saved.")
         sys.exit(1)
 
-    # Step 6: Register in database
+    # Step 6: Register in database and publish whitelist
     save_to_db(db_path, mac, hmac_key, medicine)
+
 
     print()
     print("=== Provisioning Complete ===")
@@ -227,6 +229,7 @@ def cmd_register(args: argparse.Namespace) -> None:
 
     hmac_key = os.urandom(32)
     save_to_db(db_path, mac, hmac_key, medicine)
+
 
     hex_str = format_key_hex(hmac_key)
     c_array = format_key_c_array(hmac_key)
@@ -318,6 +321,8 @@ def cmd_remove(args: argparse.Namespace) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
 
     print()
     print(f"Tag removed: {mac} ({medicine})")

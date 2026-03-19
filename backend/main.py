@@ -8,6 +8,7 @@ import logging
 import ssl
 import threading
 import time
+import json
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -100,6 +101,17 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
     return client
 
 
+def whitelist_sync_loop(client: mqtt.Client) -> None:
+    """Periodically re-publish the whitelist so RPis pick up DB changes."""
+    while True:
+        time.sleep(30)
+        try:
+            if client.is_connected():
+                publish_whitelist(client)
+        except Exception as e:
+            logger.error(f"Whitelist sync error: {e}")
+
+
 def mqtt_loop(client: mqtt.Client) -> None:
     """Run MQTT client loop in background thread.
 
@@ -162,6 +174,13 @@ async def lifespan(app: FastAPI):
         mqtt_thread = threading.Thread(target=mqtt_loop, args=(mqtt_client,), daemon=True)
         mqtt_thread.start()
         logger.info("MQTT client thread started")
+
+        # Start whitelist sync thread (re-publishes every 30s)
+        whitelist_thread = threading.Thread(
+            target=whitelist_sync_loop, args=(mqtt_client,), daemon=True
+        )
+        whitelist_thread.start()
+        logger.info("Whitelist sync thread started")
 
         yield
 

@@ -14,16 +14,14 @@ import ssl
 
 # MQTT Settings
 MQTT_BROKER = "192.168.137.118"
-MQTT_PORT = 8883
+MQTT_PORT = 1883
 MQTT_QOS = 1
 MQTT_USERNAME = "rpi"
 MQTT_PASSWORD = "1234"
 
 RECEIVER_ID = "rpi_a"
 
-KNOWN_MEDICINE_TAGS = [
-    "4C:75:25:CB:7E:0A",
-]
+KNOWN_MEDICINE_TAGS = []
 
 PUBLISH_ONLY_KNOWN_TAGS = True
 WHITELIST_TOPIC = "hospital/system/whitelist"
@@ -103,12 +101,17 @@ class MQTTPublisher:
 
     def _on_message(self, client, userdata, message):
         global KNOWN_MEDICINE_TAGS
+        logger.info(f"Received message on topic: {message.topic}")
         if message.topic == WHITELIST_TOPIC:
             try:
-                whitelist = json.loads(message.payload.decode("utf-8"))
-                if isinstance(whitelist, list):
+                raw = message.payload.decode("utf-8")
+                logger.info(f"Whitelist payload: {raw}")
+                whitelist = json.loads(raw)
+                if isinstance(whitelist, list) and len(whitelist) > 0:
                     KNOWN_MEDICINE_TAGS = [mac.upper() for mac in whitelist]
-                    logger.info(f"Whitelist updated: {len(KNOWN_MEDICINE_TAGS)} MACs")
+                    logger.info(f"Whitelist updated: {KNOWN_MEDICINE_TAGS}")
+                else:
+                    logger.warning(f"Ignoring empty or invalid whitelist: {whitelist}")
             except Exception as e:
                 logger.error(f"Failed to parse whitelist: {e}")
 
