@@ -47,7 +47,7 @@ class Settings:
 
     # Buffer management settings
     BUFFER_TIMEOUT_SECONDS = float(os.getenv("BUFFER_TIMEOUT_SECONDS", "10.0"))
-    POSITION_CALCULATION_INTERVAL = float(os.getenv("POSITION_CALCULATION_INTERVAL", "2.0"))
+    POSITION_CALCULATION_INTERVAL = float(os.getenv("POSITION_CALCULATION_INTERVAL", "6.0"))
 
     # For backward compatibility - nested access
     @property

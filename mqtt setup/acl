@@ -1,3 +1,10 @@
+# M5Stick tags - can publish emergency and ack, subscribe to commands
+user m5tag
+topic write hospital/medicine/emergency/m5tag
+topic write hospital/medicine/ack/m5tag
+topic read hospital/medicine/command/m5tag
+
+
 # RPi Zone A
 user rpi
 topic write hospital/medicine/scan/#

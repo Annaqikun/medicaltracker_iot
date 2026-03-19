@@ -385,6 +385,22 @@ async def find_medicine(mac: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/positions")
+async def get_positions() -> List[Dict[str, Any]]:
+    """Get the latest calculated x/y position for all tracked medicines, served from memory.
+
+    Returns:
+        List of position records with mac, medicine, x, y, receiver_count, time.
+
+    Raises:
+        HTTPException: If tracker is not available.
+    """
+    if medicine_tracker is None:
+        raise HTTPException(status_code=503, detail="Tracker not available")
+
+    return medicine_tracker.get_latest_positions()
+
+
 @app.get("/api/status")
 async def get_status() -> Dict[str, Any]:
     """Get system status and buffer statistics.

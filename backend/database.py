@@ -136,7 +136,6 @@ class Database:
         mac: str,
         x: float,
         y: float,
-        z: float,
         accuracy: float,
         medicine: str,
         receiver_count: int,
@@ -148,7 +147,6 @@ class Database:
             mac: MAC address of the medicine beacon.
             x: X coordinate in meters.
             y: Y coordinate in meters.
-            z: Z coordinate in meters.
             accuracy: Position accuracy/error estimate in meters.
             medicine: Name/type of medicine.
             receiver_count: Number of receivers used for calculation.
@@ -164,7 +162,6 @@ class Database:
                 .tag("medicine", medicine)
                 .field("x", x)
                 .field("y", y)
-                .field("z", z)
                 .field("accuracy", accuracy)
                 .field("receiver_count", receiver_count)
             )
@@ -173,7 +170,7 @@ class Database:
                 point = point.time(timestamp, WritePrecision.NS)
 
             self.write_api.write(bucket=self.bucket, record=point)
-            logger.info(f"Wrote position for {mac}: ({x:.2f}, {y:.2f}, {z:.2f})")
+            logger.info(f"Wrote position for {mac}: ({x:.2f}, {y:.2f})")
             return True
         except Exception as e:
             logger.error(f"Failed to write position: {e}")
@@ -367,7 +364,6 @@ class Database:
                         "medicine": record.values.get("medicine"),
                         "x": record.values.get("x"),
                         "y": record.values.get("y"),
-                        "z": record.values.get("z"),
                         "accuracy": record.values.get("accuracy"),
                         "receiver_count": record.values.get("receiver_count"),
                         "time": record.get_time()

@@ -1,12 +1,15 @@
+#include <Arduino.h>
+#include <M5Unified.h>
 #include "ble.h"
 #include "mac.h"
 #include "med.h"
 #include "temp.h"
 #include "battery.h"
 #include "movement.h"
+#include "wifi_manager.h"
+#include "ble_ack.h"
 
-#include <Arduino.h>
-#include <M5Unified.h>
+static const char* TAG_ID = "m5tag";  // change this for each device
 
 void drawM5Screen() {
   M5.Display.clearDisplay();
@@ -19,11 +22,15 @@ void drawM5Screen() {
   M5.Display.printf("T:%.2fC\n", getTemperature());
   M5.Display.printf("B:%u%%\n", getBatteryPercent());
   M5.Display.printf("Move:%s\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY");
-  M5.Display.setTextSize(2);
-  M5.Display.println(" /\\_/\\ ");
-  M5.Display.println("( o.o )");
-  M5.Display.println(" > ^ < ");
+  M5.Display.printf("WiFi:%s\n", isWifiConnected() ? "ON" : "OFF");
+  M5.Display.printf("MQTT:%s\n", isMqttConnected() ? "ON" : "OFF");
 }
+
+bool bleDirty = false;
+static bool tempAlertActive = false;
+
+static const unsigned long PERIODIC_WIFI_SYNC_MS = 1800000; // 30 minutes
+static unsigned long lastPeriodicSyncMs = 0;
 
 void drawSerial() {
   Serial.printf("MAC: %s\n", getMacString().c_str());
@@ -32,6 +39,9 @@ void drawSerial() {
   Serial.printf("Bat(V): %.3f  Bat(%%): %u\n", getBatteryVoltage(), getBatteryPercent());
   Serial.printf("Move: %s  |a|=%.2fg\n", isCurrentlyMoving() ? "MOVING" : "STATIONARY", getAccelMagnitude());
   Serial.printf("Seq: %u\n", getLastSentSeq());
+  Serial.printf("WiFi session: %s\n", isWifiSessionActive() ? "ACTIVE" : "INACTIVE");
+  Serial.printf("WiFi link: %s\n", isWifiConnected() ? "CONNECTED" : "DISCONNECTED");
+  Serial.printf("MQTT: %s\n", isMqttConnected() ? "CONNECTED" : "DISCONNECTED");
 }
 
 void setup() {
@@ -49,8 +59,17 @@ void setup() {
   setAdvertisedBatteryPercent(getBatteryPercent());
   setAdvertisedMoving(isCurrentlyMoving());
   setAdvertisedStationary(isCurrentlyStationary());
+  setAdvertisedLowBattery(getBatteryPercent() < 20);
+
+  tempAlertActive = (getTemperature() > 25.0f);
+
+  lastPeriodicSyncMs = millis();
 
   initBLE();
+
+  initWifiModule(TAG_ID);
+
+  initBleAckTracker();
 
   drawM5Screen();
 
@@ -60,30 +79,38 @@ void setup() {
 
 void loop() {
   M5.update();
-
-  bool bleDirty = false;
   bool displayDirty = false;
 
+  wifiTask();
+
   if (M5.BtnA.wasPressed()) {
-    toggleMedicine();
-    bleDirty = true;
-    displayDirty = true;
-    Serial.printf("[%lu] MED changed: %s\n", millis(), getMedicineName().c_str());
+    Serial.println("[MAIN] Manual BLE ack test");
+    recordBleAck();
   }
 
   if (M5.BtnB.wasPressed()) {
-    Serial.println("=== STATUS ===");
-    drawSerial();
+    Serial.println("=== START WIFI SESSION ===");
+    startWifiSession(WifiSessionReason::Manual);
+    displayDirty = true;
   }
 
   if (tempTask()) {
     setAdvertisedTemperature(getTemperature());
     bleDirty = true;
-    displayDirty = true;
+
+    bool isHighTemp = (getTemperature() > 25.0f);
+
+    if (isHighTemp && !tempAlertActive && !isWifiSessionActive()) {
+      Serial.println("[MAIN] High temperature detected -> starting Wi-Fi alert session");
+      startWifiSession(WifiSessionReason::TempAlert);
+    }
+
+    tempAlertActive = isHighTemp;
   }
 
   if (batteryTask()) {
     setAdvertisedBatteryPercent(getBatteryPercent());
+    setAdvertisedLowBattery(getBatteryPercent() < 20);
     bleDirty = true;
     displayDirty = true;
   }
@@ -95,8 +122,22 @@ void loop() {
     displayDirty = true;
   }
 
-  if (bleDirty) updateAdvertising();
+  if (!isWifiSessionActive() && shouldTriggerLostBleFailover()) {
+    Serial.println("[MAIN] Lost BLE detected -> start Wi-Fi failover");
+    startWifiSession(WifiSessionReason::LostBle);
+  }
+
+  if (!isWifiSessionActive() && (millis() - lastPeriodicSyncMs >= PERIODIC_WIFI_SYNC_MS)) {
+      Serial.println("[MAIN] 30-minute periodic Wi-Fi sync triggered");
+      startWifiSession(WifiSessionReason::PeriodicSync);
+      lastPeriodicSyncMs = millis();
+  }
+
+  if (bleDirty && !isWifiSessionActive()) {
+    updateAdvertising();
+    bleDirty = false;
+  }
   if (displayDirty) drawM5Screen();
-  
+
   delay(10);
 }

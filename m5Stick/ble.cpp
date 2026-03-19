@@ -1,12 +1,22 @@
 #include "ble.h"
 #include "mac.h"
 #include "med.h"
+#include "ble_ack.h"
 
 #include <BLEDevice.h>
 #include <BLEAdvertising.h>
 #include <math.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
 static BLEAdvertising* adv = nullptr;
+static BLEServer* ackServer = nullptr;
+static BLEService* ackService = nullptr;
+static BLECharacteristic* ackCharacteristic = nullptr;
+
+static const char* ACK_SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
+static const char* ACK_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdef";
 
 static uint16_t advSeq = 0;
 
@@ -15,6 +25,7 @@ static uint8_t advertisedBatteryPercent = 0;
 
 static bool advertisedMoving = false;
 static bool advertisedStationary = true;
+static bool advertisedLowBattery = false;
 
 /*
 Manufacturer Data Layout:
@@ -23,10 +34,10 @@ Byte 2-7   : Device MAC address (6 bytes, raw)
 Byte 8-19  : Medicine name (12 bytes, ASCII, space padded, truncated if >12)
 Byte 20-21 : Temperature (2 bytes, signed int16, 0.01°C, big-endian hi,lo)
 Byte 22    : Battery (1 byte)
-Byte 23    : Movement flags (1 byte, bit 0 only, where 1 = moving and 0 = not moving)
+Byte 23    : Movement flags (1 byte, bit 0 = moving, bit 1 = low battery)
 Byte 24-25 : Sequence number (2 bytes, big-endian)
 */
-static std::string buildMfgData(const String& med, float temp, uint8_t battPct, bool moving) {
+static std::string buildMfgData(const String& med, float temp, uint8_t battPct, bool moving, bool lowBattery) {
   std::string s;
   s.reserve(26);
 
@@ -52,7 +63,8 @@ static std::string buildMfgData(const String& med, float temp, uint8_t battPct, 
   s.push_back((char)battPct);
 
   uint8_t flags = 0;
-  if (moving) flags |= 0x01; // bit0 = moving
+  if (moving) flags |= 0x01;   // bit0 = moving
+  if (lowBattery) flags |= 0x02; // bit1 = low battery
   s.push_back((char)flags);
 
   uint16_t seq = advSeq++;
@@ -61,6 +73,33 @@ static std::string buildMfgData(const String& med, float temp, uint8_t battPct, 
 
   return s;
 }
+
+class AckCharacteristicCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    std::string value = characteristic->getValue();
+
+    Serial.println("[BLE ACK] GATT write received");
+
+    if (value.empty()) {
+      Serial.println("[BLE ACK] Empty payload ignored");
+      return;
+    }
+
+    Serial.print("[BLE ACK] Raw bytes: ");
+    for (size_t i = 0; i < value.size(); i++) {
+      Serial.printf("%02X ", (uint8_t)value[i]);
+    }
+    Serial.println();
+
+    Serial.printf("[BLE ACK] Payload as text: %s\n", value.c_str());
+
+    if (value == "ack") {
+      recordBleAck();
+    } else {
+      Serial.println("[BLE ACK] Invalid payload ignored");
+    }
+  }
+};
 
 static void applyAdaptiveInterval() {
   // BLE interval units are 0.625ms
@@ -82,6 +121,34 @@ static void applyAdaptiveInterval() {
   adv->setMaxInterval(interval);
 }
 
+class AckServerCallbacks: public BLEServerCallbacks{
+  void onDisconnect(BLEServer* server) override{
+    Serial.println("[BLE ACK] Client disconnected, restarting advertising");
+    BLEDevice::getAdvertising()->start();
+  }
+};
+
+
+static void setupAckGattServer() {
+  ackServer = BLEDevice::createServer();
+  ackServer ->setCallbacks(new AckServerCallbacks());
+
+  ackService = ackServer->createService(ACK_SERVICE_UUID);
+
+  ackCharacteristic = ackService->createCharacteristic(
+      ACK_CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_WRITE
+  );
+
+  ackCharacteristic->setCallbacks(new AckCharacteristicCallbacks());
+  ackCharacteristic->setValue("waiting");
+
+  ackService->start();
+
+  Serial.println("[BLE ACK] GATT service started");
+  Serial.printf("[BLE ACK] Service UUID: %s\n", ACK_SERVICE_UUID);
+  Serial.printf("[BLE ACK] Characteristic UUID: %s\n", ACK_CHARACTERISTIC_UUID);
+}
 
 void updateAdvertising() {
   BLEAdvertisementData ad;
@@ -92,7 +159,8 @@ void updateAdvertising() {
   sd.setManufacturerData(buildMfgData(getMedicineName(), 
                                       advertisedTemperature, 
                                       advertisedBatteryPercent, 
-                                      advertisedMoving));
+                                      advertisedMoving,
+                                      advertisedLowBattery));
 
   adv->stop();
 
@@ -108,6 +176,9 @@ void updateAdvertising() {
 
 void initBLE() {
   BLEDevice::init("MED_TAG");
+
+  setupAckGattServer();
+
   adv = BLEDevice::getAdvertising();
 
   // Set initial interval based on current motion state
@@ -136,4 +207,8 @@ void setAdvertisedStationary(bool stationary) {
 uint16_t getLastSentSeq() {
   if (advSeq == 0) return 0;
   return advSeq - 1;
+}
+
+void setAdvertisedLowBattery(bool lowBattery) {
+  advertisedLowBattery = lowBattery;
 }
