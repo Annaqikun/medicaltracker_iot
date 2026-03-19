@@ -14,7 +14,7 @@ import os
 
 
 # MQTT Settings
-MQTT_BROKER = "192.168.137.1"
+MQTT_BROKER = "192.168.0.5"
 MQTT_PORT = 1883
 MQTT_QOS = 1
 MQTT_USERNAME = "rpi"
@@ -58,6 +58,8 @@ parser = M5StickCNameParser()
 ACK_SERVICE_UUID        = "12345678-1234-1234-1234-1234567890ab"
 ACK_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdef"
 
+_seen_devices: dict[str, tuple] = {}  # {mac: (BLEDevice, last_seen_timestamp)}
+_pending_checks: set[str] = set()     # MACs that backend wants us to check
 
 
 class MQTTPublisher:
@@ -76,6 +78,7 @@ class MQTTPublisher:
         self.client.on_connect = self._on_connect
         self.client.on_publish = self._on_publish
         self.client.on_disconnect = self._on_disconnect
+        self.client.on_message = self._on_message
 
         self.connected = False
         self.publish_count = 0
@@ -96,6 +99,9 @@ class MQTTPublisher:
         if rc == 0:
             logger.info(f"Connected to MQTT broker at {self.broker}:{self.port}")
             self.connected = True
+            # Subscribe to ack check requests from backend
+            client.subscribe(f"hospital/medicine/ack_check/#", qos=1)
+            logger.info(f"Subscribed to ack check requests")
         else:
             logger.error(f"Connection failed with code {rc}")
             self.connected = False
@@ -111,10 +117,28 @@ class MQTTPublisher:
         else:
             logger.info("Disconnected from MQTT broker")
 
+    def _on_message(self, client, userdata, message):
+        if message.topic.startswith("hospital/medicine/ack_check/"):
+            mac = message.topic.split("/")[-1].upper()
+            _pending_checks.add(mac)
+            logger.info(f"[ACK] Backend requested check for {mac}")
+
+    def publish_ack_result(self, mac: str, status: str):
+        topic = f"hospital/medicine/ack_result/{self.receiver_id}"
+        payload = {
+            'mac': mac,
+            'status': status,
+            'receiver_id': self.receiver_id,
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+        self.client.publish(topic, json.dumps(payload), qos=1)
+        logger.info(f"[ACK] Result: {mac} -> {status}")
+
     def connect(self):
         try:
             logger.info(f"Connecting to MQTT broker at {self.broker}:{self.port}...")
-            self.client.tls_set(ca_certs=os.path.expanduser("~/iot_project/certs/ca.crt"))
+            if self.port == 8883:
+                self.client.tls_set(ca_certs=os.path.expanduser("~/iot_project/certs/ca.crt"))
             self.client.connect(self.broker, self.port, keepalive=60)
             self.client.loop_start()
             timeout = 15
@@ -174,15 +198,28 @@ class MQTTPublisher:
         self.client.loop_stop()
         self.client.disconnect()
 
-async def send_ble_ack(mac:str):
+_ack_attempt_count: dict[str, int] = {}
+_ack_in_progress: set[str] = set()  # prevent concurrent GATT to same MAC
+
+async def send_ble_ack(device, mac: str, publisher):
+    """Pass BLEDevice object directly — Bleak skips internal scan."""
+    if mac in _ack_in_progress:
+        return  # already connecting to this MAC
+    _ack_in_progress.add(mac)
+
+    _ack_attempt_count[mac] = _ack_attempt_count.get(mac, 0) + 1
+    attempt = _ack_attempt_count[mac]
     try:
-        async with BleakClient(mac,timeout = 15.0) as client:
-            await client.write_gatt_char(ACK_CHARACTERISTIC_UUID,
-                                         b"ack"
-                                         )
-            logger.info(f"[ACK] Sent to {mac}")
+        async with BleakClient(device, timeout=5.0) as client:
+            await client.write_gatt_char(ACK_CHARACTERISTIC_UUID, b"ack")
+            logger.info(f"[ACK] SUCCESS for {mac} (attempt #{attempt})")
+            publisher.publish_ack_result(mac, "success")
+            _pending_checks.discard(mac)
+            _ack_attempt_count[mac] = 0
     except Exception as e:
-        print(f"[ACK] Failed to send to {mac}: {e}")
+        logger.info(f"[ACK] FAILED for {mac} (attempt #{attempt}): {e}")
+    finally:
+        _ack_in_progress.discard(mac)
 
 
 async def scan_and_publish():
@@ -214,6 +251,7 @@ async def scan_and_publish():
             return
 
         if device_name == "MED_TAG":
+            _seen_devices[mac] = (device, time.time())
             mfg_bytes = advertisement_data.manufacturer_data.get(COMPANY_ID)
             if mfg_bytes:
                 parsed_data = parser.parse_manufacturer(mfg_bytes, mac)
@@ -222,7 +260,11 @@ async def scan_and_publish():
                     smoothed = smooth_rssi(mac, raw_rssi)
                     if publisher.publish_scan(mac, smoothed, parsed_data):
                         publisher.publish_rssi(mac, smoothed)
-                        asyncio.run_coroutine_threadsafe(send_ble_ack(mac),loop)
+                        # If backend requested an ack check for this tag, fire immediately
+                        if mac in _pending_checks:
+                            asyncio.run_coroutine_threadsafe(
+                                send_ble_ack(device, mac, publisher), loop
+                            )
 
     scanner = BleakScanner(callback, scanning_mode="active")
     await scanner.start()
