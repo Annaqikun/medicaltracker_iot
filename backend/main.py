@@ -449,14 +449,86 @@ async def get_status() -> Dict[str, Any]:
 
 @app.get("/api/ack_status")
 async def get_ack_status() -> Dict[str, Any]:
-    """Get ACK orchestration status for all tracked tags.
-
-    Returns:
-        Dict mapping each MAC address to its ACK state.
-    """
+    """Get ACK orchestration status for all tracked tags."""
     if ack_orchestrator:
         return ack_orchestrator.get_ack_stats()
     return {}
+
+
+@app.get("/api/tags")
+async def list_tags() -> List[Dict[str, Any]]:
+    """List all registered tags from the registry."""
+    tags = tag_registry.get_all_tags()
+    # Don't expose raw hmac_key bytes in API
+    return [
+        {
+            "mac": t["mac"],
+            "medicine_name": t["medicine_name"],
+            "tag_id": t["tag_id"],
+            "registered_at": t["registered_at"],
+        }
+        for t in tags
+    ]
+
+
+@app.post("/api/tags")
+async def register_tag_api(
+    mac: str,
+    medicine_name: str,
+    tag_id: str = "m5tag",
+) -> Dict[str, str]:
+    """Register a new tag (without serial provisioning).
+
+    Generates a random HMAC key. Use provision.py flash for full
+    serial provisioning with NVS key write.
+    """
+    import os
+    mac = mac.upper()
+    hmac_key = os.urandom(32)
+    tag_registry.register_tag(mac, hmac_key, medicine_name, tag_id)
+
+    # Publish updated whitelist so RPis pick it up
+    if mqtt_client:
+        publish_whitelist(mqtt_client)
+
+    return {
+        "status": "registered",
+        "mac": mac,
+        "medicine_name": medicine_name,
+        "tag_id": tag_id,
+        "hmac_key_hex": hmac_key.hex(),
+    }
+
+
+@app.delete("/api/tags/{mac}")
+async def remove_tag_api(mac: str) -> Dict[str, str]:
+    """Remove a tag from the registry."""
+    mac = mac.upper()
+    tag = tag_registry.get_tag(mac)
+    if tag is None:
+        raise HTTPException(status_code=404, detail=f"Tag {mac} not found")
+
+    tag_registry.remove_tag(mac)
+
+    # Publish updated whitelist
+    if mqtt_client:
+        publish_whitelist(mqtt_client)
+
+    return {"status": "removed", "mac": mac}
+
+
+@app.post("/api/emergency/{mac}")
+async def trigger_emergency(mac: str) -> Dict[str, str]:
+    """Manually trigger emergency search for a tag."""
+    if ack_orchestrator is None:
+        raise HTTPException(status_code=503, detail="ACK orchestrator not available")
+    if mqtt_client is None:
+        raise HTTPException(status_code=503, detail="MQTT not available")
+
+    mac = mac.upper()
+    ack_orchestrator.trigger_emergency_search(mac)
+
+    return {"status": "emergency search triggered", "mac": mac}
 
 
 if __name__ == "__main__":
