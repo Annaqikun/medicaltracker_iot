@@ -345,11 +345,8 @@ async def find_medicine(mac: str) -> Dict[str, Any]:
     if mqtt_client is None:
         raise HTTPException(status_code=503, detail="MQTT client not available")
 
-    topic = f"hospital/medicine/command/{mac}/find"
-    payload = json.dumps({
-        "command": "find",
-        "timestamp": datetime.utcnow().isoformat()
-    })
+    topic = f"hospital/medicine/command/{mac}"
+    payload = "find"
 
     try:
         result = mqtt_client.publish(topic, payload)
