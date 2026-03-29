@@ -1,41 +1,120 @@
-"""Trilateration module for calculating medicine positions from RSSI values.
+"""Localization engine for calculating medicine positions from RSSI values.
 
-This module provides functions to convert RSSI to distance and calculate
-positions using weighted centroid trilateration.
+Provides Kalman-filtered RSSI smoothing, Heron-primary localization pipeline
+(heron -> trilaterate -> weighted_centroid), and numeric confidence scoring.
+
+Localization pipeline (Heron-primary):
+    3+ receivers -> heron_localize()          confidence=high
+                 -> trilaterate() (lstsq)     confidence=medium
+                 -> weighted_centroid()        confidence=medium
+    <3 receivers -> weighted_centroid()        confidence=low
 """
 
+import itertools
 import logging
 import math
-from typing import Dict, List, Optional, Tuple
+import threading
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
-def rssi_to_distance(
+# ---------------------------------------------------------------------------
+# Kalman filter for RSSI smoothing
+# ---------------------------------------------------------------------------
+
+class KalmanFilter:
+    """Scalar (1D) Kalman filter for smoothing a single noisy signal (e.g. RSSI).
+
+    Args:
+        Q: Process noise — how much the true value drifts between updates.
+        R: Measurement noise — how noisy each reading is.
+    """
+
+    def __init__(self, Q: float = 0.01, R: float = 1.0) -> None:
+        self._x: Optional[float] = None  # state estimate
+        self._p: float = 1.0             # estimate uncertainty
+        self.Q = Q
+        self.R = R
+
+    def update(self, measurement: float) -> float:
+        """Feed one raw reading; returns the smoothed value."""
+        if self._x is None:
+            self._x = measurement
+            return self._x
+
+        self._p += self.Q
+        K = self._p / (self._p + self.R)
+        self._x = self._x + K * (measurement - self._x)
+        self._p = (1 - K) * self._p
+        return self._x
+
+
+# Thread-safe per-tag Kalman filter state
+_kalman_filters: Dict[str, KalmanFilter] = {}
+_kalman_lock = threading.Lock()
+
+
+def reset_kalman_filter(mac: str) -> None:
+    """Remove all Kalman filters for a tag so they re-initialise on next reading."""
+    with _kalman_lock:
+        stale = [k for k in _kalman_filters if k.startswith(f"{mac}:")]
+        for k in stale:
+            del _kalman_filters[k]
+
+
+def get_smoothed_distance(
+    mac: str,
     rssi: int,
+    rssi_reference: int = -59,
+    path_loss_exponent: float = 2.5,
+    receiver_id: str = "",
+) -> float:
+    """Kalman-smooth a raw RSSI reading then convert to distance.
+
+    Creates a per-(mac, receiver_id) KalmanFilter on first call. Thread-safe.
+
+    Args:
+        mac: Tag identifier.
+        rssi: Raw RSSI value in dBm.
+        rssi_reference: RSSI at 1 metre distance.
+        path_loss_exponent: Environment path loss exponent.
+        receiver_id: Receiver identifier (each receiver gets its own filter).
+
+    Returns:
+        float: Smoothed distance estimate in metres.
+    """
+    key = f"{mac}:{receiver_id}"
+    with _kalman_lock:
+        if key not in _kalman_filters:
+            _kalman_filters[key] = KalmanFilter()
+        smoothed_rssi = _kalman_filters[key].update(rssi)
+    return rssi_to_distance(smoothed_rssi, rssi_reference, path_loss_exponent)
+
+
+# ---------------------------------------------------------------------------
+# RSSI -> distance conversion
+# ---------------------------------------------------------------------------
+
+def rssi_to_distance(
+    rssi: float,
     rssi_reference: int = -59,
     path_loss_exponent: float = 2.5
 ) -> float:
-    """Convert RSSI value to estimated distance using path loss model.
+    """Convert RSSI value to estimated distance using log-distance path loss model.
 
-    Uses the log-distance path loss model:
     d = 10^((RSSI_ref - RSSI) / (10 * n))
 
-    where:
-    - d is the distance in meters
-    - RSSI_ref is the reference RSSI at 1 meter
-    - RSSI is the measured RSSI
-    - n is the path loss exponent
-
     Args:
-        rssi: Measured RSSI value in dBm (negative value)
-        rssi_reference: RSSI value at 1 meter distance (default: -59 dBm)
+        rssi: Measured RSSI value in dBm (negative value).
+        rssi_reference: RSSI value at 1 metre distance (default: -59 dBm).
         path_loss_exponent: Path loss exponent based on environment
-            (2.0 for free space, 2.5-3.0 for indoor, 3.0-4.0 for obstacles)
+            (2.0 for free space, 2.5-3.0 for indoor, 3.0-4.0 for obstacles).
 
     Returns:
-        float: Estimated distance in meters. Returns a large value if RSSI
-            is too weak to be reliable.
+        float: Estimated distance in metres.
 
     Raises:
         ValueError: If path_loss_exponent is zero or negative.
@@ -46,7 +125,7 @@ def rssi_to_distance(
     # Handle edge cases for very weak signals
     if rssi < -90:
         logger.warning(f"Very weak RSSI: {rssi} dBm, distance may be unreliable")
-        return 50.0  # Cap at 50 meters for very weak signals
+        return 50.0  # Cap at 50 metres for very weak signals
 
     if rssi > 0:
         logger.warning(f"Unexpected positive RSSI: {rssi} dBm, treating as 0")
@@ -65,140 +144,276 @@ def rssi_to_distance(
     return distance
 
 
-def trilaterate_weighted(
-    receivers: Dict[str, Tuple[float, float, float]],
-    distances: Dict[str, float],
-    min_receivers: int = 2
+# ---------------------------------------------------------------------------
+# Geometric helpers
+# ---------------------------------------------------------------------------
+
+def _heron_area(a: float, b: float, c: float) -> float:
+    """Area of a triangle given its 3 side lengths.
+
+    Returns 0 if the points are collinear (degenerate triangle).
+    """
+    s = (a + b + c) / 2
+    return math.sqrt(max(s * (s - a) * (s - b) * (s - c), 0.0))
+
+
+def is_valid_triangle(d1: float, d2: float, d3: float) -> bool:
+    """Geometric pre-check before running trilateration.
+
+    Fails fast on triangle inequality, then confirms with Heron's area > 0.
+    """
+    if not (d1 + d2 > d3 and d1 + d3 > d2 and d2 + d3 > d1):
+        return False
+    s = (d1 + d2 + d3) / 2
+    return s * (s - d1) * (s - d2) * (s - d3) > 0
+
+
+# ---------------------------------------------------------------------------
+# Localization algorithms
+# ---------------------------------------------------------------------------
+
+def _heron_localize_3(
+    r1: Tuple[float, float, float],
+    r2: Tuple[float, float, float],
+    r3: Tuple[float, float, float]
 ) -> Optional[Tuple[float, float, float]]:
-    """Calculate position using weighted centroid trilateration.
+    """Barycentric localization from exactly 3 receivers.
 
-    Uses a weighted average of receiver positions where weights are
-    inversely proportional to the estimated distance. Closer receivers
-    have higher influence on the calculated position.
+    Returns (x, y, triangle_area) or None.
+    """
+    (x1, y1, d1), (x2, y2, d2), (x3, y3, d3) = r1, r2, r3
 
-    Args:
-        receivers: Dictionary mapping receiver_id to (x, y, z) coordinates in meters.
-        distances: Dictionary mapping receiver_id to estimated distance in meters.
-        min_receivers: Minimum number of receivers required for calculation (default: 2).
+    a = math.dist((x2, y2), (x3, y3))
+    b = math.dist((x1, y1), (x3, y3))
+    c = math.dist((x1, y1), (x2, y2))
+
+    area1 = _heron_area(a, d2, d3)
+    area2 = _heron_area(b, d1, d3)
+    area3 = _heron_area(c, d1, d2)
+
+    total = area1 + area2 + area3
+    if total == 0:
+        return None
+
+    w1, w2, w3 = area1 / total, area2 / total, area3 / total
+    x = w1 * x1 + w2 * x2 + w3 * x3
+    y = w1 * y1 + w2 * y2 + w3 * y3
+    triangle_area = _heron_area(a, b, c)
+    return x, y, triangle_area
+
+
+def heron_localize(
+    receivers: List[Tuple[float, float, float]]
+) -> Optional[Tuple[float, float]]:
+    """Barycentric localization using Heron's formula.
+
+    Takes (x, y, distance) tuples, minimum 3.
+    With 4+ receivers, tries all combinations of 3 and returns a weighted
+    average where each triangle's estimate is weighted by its geometric area.
+
+    Returns (x, y) or None on failure.
+    """
+    if len(receivers) < 3:
+        return None
+
+    estimates = []
+    for combo in itertools.combinations(receivers, 3):
+        result = _heron_localize_3(*combo)
+        if result:
+            estimates.append(result)
+
+    if not estimates:
+        return None
+
+    total_weight = sum(e[2] for e in estimates)
+    if total_weight == 0:
+        return None
+
+    x = sum(e[0] * e[2] for e in estimates) / total_weight
+    y = sum(e[1] * e[2] for e in estimates) / total_weight
+    return x, y
+
+
+def trilaterate(
+    receivers: List[Tuple[float, float, float]]
+) -> Optional[Tuple[float, float]]:
+    """Linear least-squares trilateration.
+
+    Takes (x, y, distance) tuples, minimum 3.
+    Linearises the circle equations pairwise, solves with lstsq.
+
+    Returns (x, y) or None on failure.
+    """
+    if len(receivers) < 3:
+        return None
+
+    x1, y1, d1 = receivers[0]
+    A_rows = []
+    b_rows = []
+
+    for (xi, yi, di) in receivers[1:]:
+        A_rows.append([2 * (xi - x1), 2 * (yi - y1)])
+        b_rows.append(d1**2 - di**2 + xi**2 - x1**2 + yi**2 - y1**2)
+
+    A = np.array(A_rows, dtype=float)
+    b = np.array(b_rows, dtype=float)
+
+    try:
+        if np.linalg.matrix_rank(A) < 2:
+            return None
+        result, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+        return float(result[0]), float(result[1])
+    except np.linalg.LinAlgError:
+        return None
+
+
+def weighted_centroid(
+    receivers: List[Tuple[float, float, float]]
+) -> Optional[Tuple[float, float]]:
+    """Position estimate using inverse-distance weighting (w = 1/d^2).
+
+    Works with any number of receivers. Takes (x, y, distance) tuples.
+    """
+    wx, wy, total_w = 0.0, 0.0, 0.0
+    for x, y, d in receivers:
+        w = 1.0 / (max(d, 0.01) ** 2)
+        wx += w * x
+        wy += w * y
+        total_w += w
+    if total_w == 0:
+        return None
+    return wx / total_w, wy / total_w
+
+
+# ---------------------------------------------------------------------------
+# Localization pipeline (Heron-primary)
+# ---------------------------------------------------------------------------
+
+def localize(
+    receivers: List[Tuple[float, float, float]]
+) -> Optional[Dict[str, Any]]:
+    """Heron-primary localization pipeline.
+
+    Takes (x, y, distance) tuples.
+
+    Pipeline:
+        3+ receivers -> heron_localize()       confidence=high
+                     -> trilaterate() (lstsq)  confidence=medium
+                     -> weighted_centroid()     confidence=medium
+        <3 receivers -> weighted_centroid()     confidence=low
 
     Returns:
-        Optional[Tuple[float, float, float]]: Calculated (x, y, z) position in meters,
-            or None if insufficient receivers or calculation fails.
-
-    Raises:
-        ValueError: If receivers and distances have no common keys.
+        {"x": float, "y": float, "method": str, "confidence": str} or None.
     """
-    # Find common receivers between positions and distances
-    common_receivers = set(receivers.keys()) & set(distances.keys())
+    if len(receivers) >= 3:
+        pos = heron_localize(receivers)
+        if pos:
+            return {"x": pos[0], "y": pos[1], "method": "heron", "confidence": "high"}
 
-    if len(common_receivers) < min_receivers:
-        logger.debug(
-            f"Insufficient receivers for trilateration: {len(common_receivers)} "
-            f"(need {min_receivers})"
+        geometry_valid = any(
+            abs((x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1)) > 1e-6
+            for (x1, y1, _), (x2, y2, _), (x3, y3, _)
+            in itertools.combinations(receivers, 3)
         )
+        if geometry_valid:
+            pos = trilaterate(receivers)
+            if pos:
+                return {"x": pos[0], "y": pos[1], "method": "trilateration", "confidence": "medium"}
+
+    pos = weighted_centroid(receivers)
+    if pos is None:
         return None
+    confidence = "medium" if len(receivers) >= 3 else "low"
+    return {"x": pos[0], "y": pos[1], "method": "weighted_centroid", "confidence": confidence}
 
-    # Filter to common receivers
-    valid_receivers = []
-    valid_distances = []
 
-    for receiver_id in common_receivers:
-        if distances[receiver_id] > 0:
-            valid_receivers.append(receivers[receiver_id])
-            valid_distances.append(distances[receiver_id])
+# ---------------------------------------------------------------------------
+# Confidence scoring
+# ---------------------------------------------------------------------------
 
-    if len(valid_receivers) < min_receivers:
-        logger.debug("Not enough valid distances for trilateration")
-        return None
+def calculate_confidence(
+    method: str,
+    receiver_count: int,
+    rmse: float
+) -> float:
+    """Compute numeric confidence score 0-100.
 
-    # Calculate weights (inverse of distance, with small epsilon to avoid division by zero)
-    epsilon = 0.1  # Minimum distance to avoid infinite weights
-    weights = []
+    Weighted scoring:
+      - Method (40%): heron=40, trilateration=30, weighted_centroid=15
+      - Receiver count (30%): 4+=30, 3=25, 2=15, 1=5
+      - RMSE (30%): <0.5m=30, <1m=25, <2m=18, <5m=10, else=0
 
-    for distance in valid_distances:
-        # Weight is inverse of distance squared for better accuracy
-        weight = 1.0 / max(distance ** 2, epsilon ** 2)
-        weights.append(weight)
+    Args:
+        method: Algorithm used ("heron", "trilateration", "weighted_centroid").
+        receiver_count: Number of receivers contributing to the estimate.
+        rmse: Root mean square error of the position estimate in metres.
 
-    # Normalize weights
-    total_weight = sum(weights)
-    if total_weight == 0:
-        logger.warning("Total weight is zero in trilateration")
-        return None
+    Returns:
+        float: Confidence score 0-100.
+    """
+    # Method score (40% weight)
+    method_scores = {"heron": 40, "trilateration": 30, "weighted_centroid": 15}
+    method_score = method_scores.get(method, 0)
 
-    normalized_weights = [w / total_weight for w in weights]
+    # Receiver count score (30% weight)
+    if receiver_count >= 4:
+        receiver_score = 30
+    elif receiver_count == 3:
+        receiver_score = 25
+    elif receiver_count == 2:
+        receiver_score = 15
+    else:
+        receiver_score = 5
 
-    # Calculate weighted centroid
-    x_sum = 0.0
-    y_sum = 0.0
-    z_sum = 0.0
+    # RMSE score (30% weight)
+    if rmse < 0.5:
+        rmse_score = 30
+    elif rmse < 1.0:
+        rmse_score = 25
+    elif rmse < 2.0:
+        rmse_score = 18
+    elif rmse < 5.0:
+        rmse_score = 10
+    else:
+        rmse_score = 0
 
-    for i, (rx, ry, rz) in enumerate(valid_receivers):
-        weight = normalized_weights[i]
-        x_sum += rx * weight
-        y_sum += ry * weight
-        z_sum += rz * weight
+    return float(method_score + receiver_score + rmse_score)
 
-    calculated_position = (x_sum, y_sum, z_sum)
 
-    logger.info(
-        f"Trilateration calculated position: ({x_sum:.2f}, {y_sum:.2f}, {z_sum:.2f}) "
-        f"using {len(valid_receivers)} receivers"
-    )
-
-    return calculated_position
-
+# ---------------------------------------------------------------------------
+# Position error (RMSE) — adapted to 2D
+# ---------------------------------------------------------------------------
 
 def calculate_position_error(
-    calculated_position: Tuple[float, float, float],
-    receivers: Dict[str, Tuple[float, float, float]],
+    calculated_position: Tuple[float, float],
+    receivers: Dict[str, Tuple[float, float]],
     distances: Dict[str, float]
 ) -> float:
-    """Calculate the root mean square error of the position estimate.
+    """Calculate the root mean square error of a 2D position estimate.
 
     Args:
-        calculated_position: The calculated (x, y, z) position.
-        receivers: Dictionary of receiver positions.
-        distances: Dictionary of measured distances.
+        calculated_position: The calculated (x, y) position.
+        receivers: Dictionary of receiver_id -> (x, y) positions.
+        distances: Dictionary of receiver_id -> measured distance.
 
     Returns:
-        float: RMSE in meters. Lower values indicate better fit.
+        float: RMSE in metres. Lower values indicate better fit.
     """
-    cx, cy, cz = calculated_position
+    cx, cy = calculated_position
     squared_errors = []
 
     common_receivers = set(receivers.keys()) & set(distances.keys())
 
     for receiver_id in common_receivers:
-        rx, ry, rz = receivers[receiver_id]
+        rx, ry = receivers[receiver_id]
         measured_distance = distances[receiver_id]
 
-        # Calculate expected distance to calculated position
-        expected_distance = math.sqrt(
-            (cx - rx) ** 2 + (cy - ry) ** 2 + (cz - rz) ** 2
-        )
+        expected_distance = math.sqrt((cx - rx) ** 2 + (cy - ry) ** 2)
 
-        # Calculate squared error
         error = measured_distance - expected_distance
         squared_errors.append(error ** 2)
 
     if not squared_errors:
         return float('inf')
 
-    rmse = math.sqrt(sum(squared_errors) / len(squared_errors))
-    return rmse
-
-
-def get_receiver_positions() -> Dict[str, Tuple[float, float, float]]:
-    """Get default receiver positions for the medical tracker system.
-
-    Returns:
-        Dict[str, Tuple[float, float, float]]: Dictionary mapping receiver IDs
-            to their (x, y, z) coordinates in meters.
-    """
-    return {
-        "receiver_1": (0.0, 0.0, 2.0),
-        "receiver_2": (10.0, 0.0, 2.0),
-        "receiver_3": (5.0, 8.66, 2.0),
-        "receiver_4": (5.0, 2.89, 2.0),
-    }
+    return math.sqrt(sum(squared_errors) / len(squared_errors))
