@@ -20,3 +20,16 @@ void setAdvertisedStationary(bool stationary);
 
 // get the last sent advertising sequence number
 uint16_t getLastSentSeq();
+
+// Fully stop and deinitialize BLE before Wi-Fi/TLS
+// Recovery is handled via ESP.restart() after the Wi-Fi session.
+void stopBLE();
+
+// low-battery flag for BLE status byte
+void setAdvertisedLowBattery(bool lowBattery);
+
+// Command characteristic UUID for BLE "find" commands
+extern const char* COMMAND_CHARACTERISTIC_UUID;
+
+// Trigger the Find Me beep + display sequence (shared by BLE and MQTT paths)
+void triggerFindMe();

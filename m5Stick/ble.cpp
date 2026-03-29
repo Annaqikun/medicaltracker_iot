@@ -1,12 +1,28 @@
 #include "ble.h"
 #include "mac.h"
-#include "med.h"
+#include "hmac.h"
+#include "ble_ack.h"
 
 #include <BLEDevice.h>
 #include <BLEAdvertising.h>
 #include <math.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <M5Unified.h>
+
+extern bool findMeActive;
+extern void drawM5Screen();
 
 static BLEAdvertising* adv = nullptr;
+static BLEServer* ackServer = nullptr;
+static BLEService* ackService = nullptr;
+static BLECharacteristic* ackCharacteristic = nullptr;
+static BLECharacteristic* commandCharacteristic = nullptr;
+
+static const char* ACK_SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
+static const char* ACK_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdef";
+const char* COMMAND_CHARACTERISTIC_UUID = "abcdefab-1234-1234-1234-abcdefabcdf0";
 
 static uint16_t advSeq = 0;
 
@@ -15,73 +31,201 @@ static uint8_t advertisedBatteryPercent = 0;
 
 static bool advertisedMoving = false;
 static bool advertisedStationary = true;
+static bool advertisedLowBattery = false;
 
 /*
-Manufacturer Data Layout:
+Manufacturer Data Layout (18 bytes total):
 Byte 0-1   : Company ID (0xFFFF, little-endian)
 Byte 2-7   : Device MAC address (6 bytes, raw)
-Byte 8-19  : Medicine name (12 bytes, ASCII, space padded, truncated if >12)
-Byte 20-21 : Temperature (2 bytes, signed int16, 0.01°C, big-endian hi,lo)
-Byte 22    : Battery (1 byte)
-Byte 23    : Movement flags (1 byte, bit 0 only, where 1 = moving and 0 = not moving)
-Byte 24-25 : Sequence number (2 bytes, big-endian)
+Byte 8-9   : Temperature (2 bytes, signed int16, 0.01°C, big-endian hi,lo)
+Byte 10    : Battery (1 byte)
+Byte 11    : Movement flags (1 byte, bit 0 = moving, bit 1 = low battery)
+Byte 12-13 : Sequence number (2 bytes, big-endian)
+Byte 14-17 : Truncated HMAC-SHA256 (4 bytes, computed over bytes 2-13)
 */
-static std::string buildMfgData(const String& med, float temp, uint8_t battPct, bool moving) {
+static std::string buildMfgData(float temp, uint8_t battPct, bool moving, bool lowBattery) {
   std::string s;
-  s.reserve(26);
+  s.reserve(18);
 
+  // Bytes 0-1: Company ID
   s.push_back((char)0xFF);
   s.push_back((char)0xFF);
 
+  // Bytes 2-7: MAC address
   uint8_t mac[6];
   getMacBytes(mac);
   for (int i = 0; i < 6; i++) s.push_back((char)mac[i]);
 
-  String m = med;
-  if (m.length() > 12) m = m.substring(0, 12);
-  while (m.length() < 12) m += ' ';
-  s.append(m.c_str(), 12);
-
+  // Bytes 8-9: Temperature (big-endian signed int16, units of 0.01°C)
   int16_t t100 = (int16_t)lroundf(temp * 100.0f);
   uint8_t hi = (uint8_t)((t100 >> 8) & 0xFF);
   uint8_t lo = (uint8_t)(t100 & 0xFF);
   s.push_back((char)hi);
   s.push_back((char)lo);
 
+  // Byte 10: Battery percent
   if (battPct > 100) battPct = 100;
   s.push_back((char)battPct);
 
+  // Byte 11: Movement flags (bit 0 = moving, bit 1 = low battery)
   uint8_t flags = 0;
-  if (moving) flags |= 0x01; // bit0 = moving
+  if (moving) flags |= 0x01;      // bit0 = moving
+  if (lowBattery) flags |= 0x02;  // bit1 = low battery
   s.push_back((char)flags);
 
+  // Bytes 12-13: Sequence number (big-endian)
   uint16_t seq = advSeq++;
   s.push_back((char)((seq >> 8) & 0xFF));
   s.push_back((char)(seq & 0xFF));
 
+  // Bytes 14-17: Truncated HMAC-SHA256 (over bytes 2-13)
+  uint8_t hmacOut[4];
+  computeHmac((const uint8_t*)s.data() + 2, 12, hmacOut);
+  for (int i = 0; i < 4; i++) s.push_back((char)hmacOut[i]);
+
   return s;
 }
 
+class AckCharacteristicCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    std::string value = characteristic->getValue();
+
+    Serial.println("[BLE ACK] GATT write received");
+
+    if (value.empty()) {
+      Serial.println("[BLE ACK] Empty payload ignored");
+      return;
+    }
+
+    Serial.print("[BLE ACK] Raw bytes: ");
+    for (size_t i = 0; i < value.size(); i++) {
+      Serial.printf("%02X ", (uint8_t)value[i]);
+    }
+    Serial.println();
+
+    Serial.printf("[BLE ACK] Payload as text: %s\n", value.c_str());
+
+    if (value == "ack") {
+      recordBleAck();
+    } else {
+      Serial.println("[BLE ACK] Invalid payload ignored");
+    }
+  }
+};
+
+void triggerFindMe() {
+  findMeActive = true;
+  drawM5Screen();
+
+  M5.Speaker.setVolume(255);
+
+  // {frequency, duration, gap after}
+  const int melody[][3] = {
+    {1319, 400, 8},   // E
+    {1319, 400, 8},   // E
+    {1760, 350, 20},  // A
+    {1976, 350, 8},   // B
+    {2093, 750, 10},  // C
+
+    {2093, 700, 8},   // C
+    {2093, 1400, 10}, // C
+
+    {1976, 350, 8},   // B
+    {1760, 350, 8},   // A
+    {1397, 1050, 10}, // F
+
+    {1397, 700, 8}    // F
+  };
+  const int noteCount = sizeof(melody) / sizeof(melody[0]);
+
+  // Play it twice
+  for (int round = 0; round < 2; round++) {
+    for (int i = 0; i < noteCount; i++) {
+      M5.Speaker.tone(melody[i][0], melody[i][1]);
+      delay(melody[i][1] + melody[i][2]);
+    }
+    delay(300);
+  }
+  M5.Speaker.stop();
+
+  findMeActive = false;
+  drawM5Screen();
+}
+
+class CommandCharacteristicCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    std::string value = characteristic->getValue();
+
+    Serial.println("[BLE CMD] GATT write received");
+
+    if (value.empty()) {
+      Serial.println("[BLE CMD] Empty payload ignored");
+      return;
+    }
+
+    Serial.printf("[BLE CMD] Payload: %s\n", value.c_str());
+
+    if (value == "find") {
+      Serial.println("[BLE CMD] Find command received — triggering Find Me");
+      triggerFindMe();
+    } else {
+      Serial.printf("[BLE CMD] Unknown command ignored: %s\n", value.c_str());
+    }
+  }
+};
+
 static void applyAdaptiveInterval() {
   // BLE interval units are 0.625ms
-  // Tune these based on your needs:
-  // - Faster = better tracking but drains battery
-  // - Slower = saves battery but less responsive
-  
+  // Faster = better GATT ACK reliability but more battery drain
+  // 320 = 200ms — good balance for ACK + tracking
   uint16_t interval;
   if (advertisedStationary) {
-    interval = 8000;  // 5000ms (5 seconds) - save battery when still
+    interval = 320;   // 200ms - reliable for GATT ACK connections
   } else {
-    // MOVING - choose your speed:
-    interval = 1600;  // 1000ms (1 second) - balanced
-    // interval = 800;   // 500ms (0.5 seconds) - real-time but drains fast
-    // interval = 3200;  // 2000ms (2 seconds) - battery saver
+    interval = 160;   // 100ms - fast tracking when moving
   }
-  
+
   adv->setMinInterval(interval);
   adv->setMaxInterval(interval);
 }
 
+class AckServerCallbacks: public BLEServerCallbacks{
+  void onDisconnect(BLEServer* server) override{
+    Serial.println("[BLE ACK] Client disconnected, restarting advertising");
+    BLEDevice::getAdvertising()->start();
+  }
+};
+
+
+static void setupAckGattServer() {
+  ackServer = BLEDevice::createServer();
+  ackServer ->setCallbacks(new AckServerCallbacks());
+
+  ackService = ackServer->createService(ACK_SERVICE_UUID);
+
+  ackCharacteristic = ackService->createCharacteristic(
+      ACK_CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_WRITE
+  );
+
+  ackCharacteristic->setCallbacks(new AckCharacteristicCallbacks());
+  ackCharacteristic->setValue("waiting");
+
+  commandCharacteristic = ackService->createCharacteristic(
+      COMMAND_CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_WRITE
+  );
+
+  commandCharacteristic->setCallbacks(new CommandCharacteristicCallbacks());
+  commandCharacteristic->setValue("idle");
+
+  ackService->start();
+
+  Serial.println("[BLE ACK] GATT service started");
+  Serial.printf("[BLE ACK] Service UUID: %s\n", ACK_SERVICE_UUID);
+  Serial.printf("[BLE ACK] Characteristic UUID: %s\n", ACK_CHARACTERISTIC_UUID);
+  Serial.printf("[BLE CMD] Command Characteristic UUID: %s\n", COMMAND_CHARACTERISTIC_UUID);
+}
 
 void updateAdvertising() {
   BLEAdvertisementData ad;
@@ -89,10 +233,10 @@ void updateAdvertising() {
   ad.setName("MED_TAG");
 
   BLEAdvertisementData sd;
-  sd.setManufacturerData(buildMfgData(getMedicineName(), 
-                                      advertisedTemperature, 
-                                      advertisedBatteryPercent, 
-                                      advertisedMoving));
+  sd.setManufacturerData(buildMfgData(advertisedTemperature,
+                                      advertisedBatteryPercent,
+                                      advertisedMoving,
+                                      advertisedLowBattery));
 
   adv->stop();
 
@@ -108,6 +252,9 @@ void updateAdvertising() {
 
 void initBLE() {
   BLEDevice::init("MED_TAG");
+
+  setupAckGattServer();
+
   adv = BLEDevice::getAdvertising();
 
   // Set initial interval based on current motion state
@@ -136,4 +283,8 @@ void setAdvertisedStationary(bool stationary) {
 uint16_t getLastSentSeq() {
   if (advSeq == 0) return 0;
   return advSeq - 1;
+}
+
+void setAdvertisedLowBattery(bool lowBattery) {
+  advertisedLowBattery = lowBattery;
 }

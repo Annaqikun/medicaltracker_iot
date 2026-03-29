@@ -14,9 +14,10 @@ import time
 from datetime import datetime
 import threading
 import ssl
+import os
 
 MQTT_BROKER = "192.168.137.1"
-MQTT_PORT = 1883
+MQTT_PORT = 8883
 MQTT_QOS = 1
 
 
@@ -44,7 +45,9 @@ class MessageDeduplicator:
         if rc == 0:
             print(f"Connected to MQTT broker at {self.broker}:{self.port}")
             self.client.subscribe("hospital/medicine/scan/#", qos=MQTT_QOS)
+            self.client.subscribe("hospital/medicine/emergency/#", qos=MQTT_QOS)
             print("Subscribed to: hospital/medicine/scan/#")
+            print("Subscribed to: hospital/medicine/emergency/#")
             print("Waiting for messages...\n")
         else:
             print(f"Connection failed with code {rc}")
@@ -52,6 +55,18 @@ class MessageDeduplicator:
     def _on_message(self, client, userdata, msg):
         try:
             data = json.loads(msg.payload.decode())
+
+            # Handle M5Stick WiFi failover emergency messages
+            if msg.topic.startswith("hospital/medicine/emergency/"):
+                tag_id = data.get('id', '?')
+                status = data.get('status', '?')
+                temp   = data.get('temp_c', 'N/A')
+                battery = data.get('battery_percent', 'N/A')
+                print(f"EMERGENCY | Tag: {tag_id} | Status: {status} | Temp: {temp}°C | Bat: {battery}%")
+                self.received_count += 1
+                return
+
+            # Handle normal RPi scan messages
             mac = data.get('mac')
             seq = data.get('sequence_number')
 
@@ -142,6 +157,8 @@ class MessageDeduplicator:
         print()
 
         try:
+            ca_cert = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "certs", "ca.crt")
+            self.client.tls_set(ca_certs=ca_cert)
             self.client.connect(self.broker, self.port, keepalive=60)
         except Exception as e:
             print(f"Failed to connect to MQTT broker: {e}")

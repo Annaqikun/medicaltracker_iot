@@ -21,3 +21,9 @@ httpx>=0.25.0
 
 # CORS Middleware
 python-multipart>=0.0.6
+
+# Localization algorithms (trilateration, least-squares)
+numpy>=1.24.0
+
+# HMAC verification & beacon registry use only Python stdlib modules:
+#   hmac, hashlib, sqlite3, struct  — no extra packages required.

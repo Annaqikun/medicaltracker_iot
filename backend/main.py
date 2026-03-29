@@ -4,17 +4,34 @@ This module provides the main FastAPI application with MQTT integration,
 REST API endpoints for querying medicine data, and CORS middleware.
 """
 
+import json
 import logging
+import re
 import ssl
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+MAC_RE = re.compile(r'^[0-9A-F]{2}(:[0-9A-F]{2}){5}$')
+
+
+def _validate_mac(mac: str) -> str:
+    """Uppercase and validate a MAC address. Raises HTTPException if invalid."""
+    mac = _validate_mac(mac)
+    if not MAC_RE.match(mac):
+        raise HTTPException(status_code=400, detail=f"Invalid MAC address: {mac}")
+    return mac
 
 import paho.mqtt.client as mqtt
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
+from ack_orchestrator import AckOrchestrator
+import tag_registry
 from config import settings
 from database import Database
 from mqtt_handler import MedicineTracker
@@ -29,8 +46,25 @@ logger = logging.getLogger(__name__)
 # Global instances
 db: Optional[Database] = None
 medicine_tracker: Optional[MedicineTracker] = None
+ack_orchestrator: Optional[AckOrchestrator] = None
 mqtt_client: Optional[mqtt.Client] = None
 mqtt_thread: Optional[threading.Thread] = None
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend-react" / "dist"
+
+
+WHITELIST_TOPIC = "hospital/system/whitelist"
+
+
+def publish_whitelist(client: mqtt.Client) -> None:
+    """Publish the current tag whitelist as a retained MQTT message.
+
+    RPi receivers subscribe to this topic and update their local
+    whitelist automatically.
+    """
+    whitelist = tag_registry.get_whitelist()
+    payload = json.dumps(whitelist)
+    client.publish(WHITELIST_TOPIC, payload, qos=1, retain=True)
+    logger.info(f"Published whitelist ({len(whitelist)} MACs) to {WHITELIST_TOPIC}")
 
 
 def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
@@ -65,6 +99,16 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
             logger.info("Connected to MQTT broker")
             client.subscribe(settings.mqtt.topic)
             logger.info(f"Subscribed to topic: {settings.mqtt.topic}")
+            client.subscribe("hospital/medicine/rssi_only/#")
+            logger.info("Subscribed to topic: hospital/medicine/rssi_only/#")
+            client.subscribe("hospital/medicine/ack_result/#")
+            logger.info("Subscribed to topic: hospital/medicine/ack_result/#")
+            client.subscribe("hospital/medicine/emergency/#")
+            logger.info("Subscribed to topic: hospital/medicine/emergency/#")
+            client.subscribe("hospital/medicine/command_ble_result/#")
+            logger.info("Subscribed to topic: hospital/medicine/command_ble_result/#")
+            # Publish whitelist as retained message so RPis get it immediately
+            publish_whitelist(client)
         else:
             logger.error(f"Failed to connect to MQTT broker: {rc}")
 
@@ -74,12 +118,35 @@ def setup_mqtt_client(tracker: MedicineTracker) -> mqtt.Client:
     def on_subscribe(client, userdata, mid, granted_qos):
         logger.info(f"Subscribed with mid={mid}")
 
+    def on_message(client, userdata, message):
+        if message.topic.startswith("hospital/medicine/ack_result/"):
+            if ack_orchestrator:
+                ack_orchestrator.on_ack_result(client, userdata, message)
+        elif message.topic.startswith("hospital/medicine/emergency/"):
+            if ack_orchestrator:
+                ack_orchestrator.on_emergency_message(client, userdata, message)
+        elif message.topic.startswith("hospital/medicine/command_ble_result/"):
+            logger.info(f"BLE command result: {message.payload.decode('utf-8')}")
+        else:
+            tracker.on_message(client, userdata, message)
+
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_subscribe = on_subscribe
-    client.on_message = tracker.on_message
+    client.on_message = on_message
 
     return client
+
+
+def whitelist_sync_loop(client: mqtt.Client) -> None:
+    """Periodically re-publish the whitelist so RPis pick up DB changes."""
+    while True:
+        time.sleep(30)
+        try:
+            if client.is_connected():
+                publish_whitelist(client)
+        except Exception as e:
+            logger.error(f"Whitelist sync error: {e}")
 
 
 def mqtt_loop(client: mqtt.Client) -> None:
@@ -110,25 +177,39 @@ async def lifespan(app: FastAPI):
     Args:
         app: FastAPI application instance.
     """
-    global db, medicine_tracker, mqtt_client, mqtt_thread
+    global db, medicine_tracker, ack_orchestrator, mqtt_client, mqtt_thread
 
     # Startup
     logger.info("Starting Medical Tracker backend...")
 
     try:
-        # Initialize database
-        db = Database(
-            url=settings.INFLUXDB_URL,
-            token=settings.INFLUXDB_TOKEN,
-            org=settings.INFLUXDB_ORG,
-            bucket=settings.INFLUXDB_BUCKET
+        # Initialize tag registry
+        tag_registry.init_db()
+        registered_tags = tag_registry.get_all_tags()
+        logger.info(
+            f"Tag registry ready — {len(registered_tags)} tag(s) registered"
         )
-        logger.info("Database connection established")
 
-        # Initialize medicine tracker
-        medicine_tracker = MedicineTracker(db)
+        # Try to connect InfluxDB for historical logging (optional)
+        try:
+            db = Database(
+                url=settings.INFLUXDB_URL,
+                token=settings.INFLUXDB_TOKEN,
+                org=settings.INFLUXDB_ORG,
+                bucket=settings.INFLUXDB_BUCKET,
+            )
+            logger.info("InfluxDB connected (historical logging enabled)")
+        except Exception as e:
+            logger.warning(f"InfluxDB unavailable, running without history: {e}")
+
+        # Initialize medicine tracker (live data in-memory, DB optional for history)
+        medicine_tracker = MedicineTracker(db=db)
         medicine_tracker.start()
         logger.info("Medicine tracker started")
+
+        # Initialize ACK orchestrator
+        ack_orchestrator = AckOrchestrator(medicine_tracker)
+        logger.info("ACK orchestrator initialised")
 
         # Initialize MQTT client
         mqtt_client = setup_mqtt_client(medicine_tracker)
@@ -137,6 +218,17 @@ async def lifespan(app: FastAPI):
         mqtt_thread = threading.Thread(target=mqtt_loop, args=(mqtt_client,), daemon=True)
         mqtt_thread.start()
         logger.info("MQTT client thread started")
+
+        # Start ACK orchestrator (needs mqtt_client to be ready)
+        ack_orchestrator.start(mqtt_client)
+        logger.info("ACK orchestrator started")
+
+        # Start whitelist sync thread (re-publishes every 30s)
+        whitelist_thread = threading.Thread(
+            target=whitelist_sync_loop, args=(mqtt_client,), daemon=True
+        )
+        whitelist_thread.start()
+        logger.info("Whitelist sync thread started")
 
         yield
 
@@ -147,6 +239,10 @@ async def lifespan(app: FastAPI):
     finally:
         # Shutdown
         logger.info("Shutting down Medical Tracker backend...")
+
+        if ack_orchestrator:
+            ack_orchestrator.stop()
+            logger.info("ACK orchestrator stopped")
 
         if medicine_tracker:
             medicine_tracker.stop()
@@ -159,7 +255,7 @@ async def lifespan(app: FastAPI):
 
         if db:
             db.close()
-            logger.info("Database connection closed")
+            logger.info("InfluxDB connection closed")
 
 
 # Create FastAPI application
@@ -179,6 +275,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if (FRONTEND_DIR / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="assets")
+
 
 @app.get("/")
 async def root() -> Dict[str, Any]:
@@ -193,148 +292,334 @@ async def root() -> Dict[str, Any]:
         "status": "running",
         "endpoints": [
             "/",
+            "/dashboard",
             "/api/medicines",
+            "/api/positions",
             "/api/medicine/{mac}/history",
-            "/api/alerts"
+            "/api/alerts",
+            "/api/ack_status",
+            "/api/status"
         ]
     }
 
 
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard() -> FileResponse:
+    """Serve the monitoring dashboard."""
+    if not FRONTEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Frontend not found — build frontend-react first")
+
+    return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/api/positions")
+async def get_positions() -> List[Dict[str, Any]]:
+    """Get latest trilaterated positions from live MQTT data."""
+    if medicine_tracker is None:
+        raise HTTPException(status_code=503, detail="Tracker not available")
+    return medicine_tracker.get_latest_positions()
+
+
+# ---------------------------------------------------------------------------
+# Provisioning API (USB serial)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/provision/usb")
+async def check_usb() -> Dict[str, Any]:
+    """Scan for connected USB serial devices (potential M5 tags)."""
+    import glob
+    import platform
+
+    system = platform.system()
+    if system == "Darwin":
+        ports = glob.glob("/dev/cu.usb*")
+    elif system == "Linux":
+        ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
+    else:
+        ports = []
+
+    return {
+        "ports": ports,
+        "count": len(ports),
+        "hint": "Plug in M5 via USB, then call POST /api/provision/flash"
+    }
+
+
+@app.post("/api/provision/flash")
+async def provision_flash(
+    port: str,
+    medicine_name: str,
+    tag_id: str = "m5tag",
+    baud: int = 115200,
+) -> Dict[str, Any]:
+    """Full serial provisioning: read MAC, generate key, flash NVS, register.
+
+    The M5 must be plugged in and showing the provisioning cat screen.
+    """
+    import os
+
+    try:
+        import serial
+    except ImportError:
+        raise HTTPException(status_code=500, detail="pyserial not installed on server")
+
+    # Step 1: Open serial port
+    try:
+        ser = serial.Serial(port, baud, timeout=1)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot open {port}: {e}")
+
+    import asyncio
+    await asyncio.sleep(0.5)  # let M5 settle
+
+    steps = []
+
+    try:
+        # Step 2: Send provisioning ping
+        ser.write(b"PROV_PING\n")
+        ser.flush()
+        steps.append("PROV_PING sent")
+
+        # Step 3: Wait for MAC
+        mac = None
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            line = ser.readline().decode("utf-8", errors="ignore").strip()
+            if line.startswith("PROV_MAC:"):
+                mac = line[len("PROV_MAC:"):].strip().upper()
+                break
+
+        if not mac:
+            raise HTTPException(status_code=408, detail="M5 did not respond with MAC (timeout)")
+
+        steps.append(f"MAC received: {mac}")
+
+        # Step 4: Generate key
+        hmac_key = os.urandom(32)
+        hex_key = hmac_key.hex()
+        steps.append("HMAC key generated")
+
+        # Step 5: Send key to M5
+        ser.write(f"PROV_KEY:{hex_key}\n".encode())
+        ser.flush()
+        steps.append("Key sent to M5")
+
+        # Step 6: Wait for confirmation
+        confirmed = False
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            line = ser.readline().decode("utf-8", errors="ignore").strip()
+            if line == "PROV_OK":
+                confirmed = True
+                break
+            if line.startswith("PROV_ERR:"):
+                raise HTTPException(status_code=400, detail=f"M5 error: {line}")
+
+        if not confirmed:
+            raise HTTPException(status_code=408, detail="M5 did not confirm key save (timeout)")
+
+        steps.append("M5 confirmed key saved")
+
+        # Step 7: Register in database
+        tag_registry.register_tag(mac, hmac_key, medicine_name, tag_id)
+        steps.append("Registered in tag registry")
+
+        # Step 8: Publish updated whitelist
+        if mqtt_client:
+            publish_whitelist(mqtt_client)
+            steps.append("Whitelist published")
+
+        return {
+            "status": "provisioned",
+            "mac": mac,
+            "medicine_name": medicine_name,
+            "tag_id": tag_id,
+            "steps": steps,
+        }
+
+    finally:
+        ser.close()
+
+
+@app.post("/api/find/{mac}")
+async def find_tag(mac: str) -> Dict[str, str]:
+    """Send 'find' command to a tag via BLE (through RPi) or WiFi (direct MQTT).
+
+    Publishes to command_ble topic for RPi to relay via GATT.
+    Also publishes to WiFi command topic as fallback if tag is in WiFi mode.
+    """
+    if mqtt_client is None:
+        raise HTTPException(status_code=503, detail="MQTT not available")
+
+    mac = _validate_mac(mac)
+
+    # BLE path: RPi relays via GATT
+    ble_topic = f"hospital/medicine/command_ble/{mac}"
+    mqtt_client.publish(ble_topic, "find", qos=1)
+    logger.info(f"Published BLE find command for {mac}")
+
+    # WiFi fallback: direct to M5 via MQTT (if it's in WiFi mode)
+    wifi_topic = f"hospital/medicine/command/{mac}"
+    mqtt_client.publish(wifi_topic, "find", qos=1)
+    logger.info(f"Published WiFi find command for {mac}")
+
+    return {"status": "find command sent", "mac": mac}
+
+
+@app.get("/api/auth_stats")
+async def get_auth_stats() -> Dict[str, int]:
+    """Get HMAC auth failure counters (unknown MAC, missing HMAC, invalid HMAC)."""
+    if medicine_tracker:
+        return medicine_tracker.get_auth_stats()
+    return {}
+
+
 @app.get("/api/medicines")
 async def get_medicines() -> List[Dict[str, Any]]:
-    """Get current status of all tracked medicines (raw scan data).
-
-    Returns:
-        List of medicine status records.
-
-    Raises:
-        HTTPException: If database is not available.
-    """
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-
-    try:
-        # Query raw scan data instead of calculated positions
-        # (positions require 2+ receivers for trilateration)
-        statuses = db.query_latest_status()
-        return statuses
-    except Exception as e:
-        logger.error(f"Error querying medicines: {e}")
-        raise HTTPException(status_code=500, detail="Failed to query medicines")
+    """Get current status of all tracked medicines from live MQTT data."""
+    if medicine_tracker is None:
+        raise HTTPException(status_code=503, detail="Tracker not available")
+    return medicine_tracker.get_latest_statuses()
 
 
-@app.get("/api/data")
-async def get_all_data(minutes: int = 60) -> List[Dict[str, Any]]:
-    """Get all raw data from InfluxDB.
-
-    Args:
-        minutes: How many minutes of data to retrieve (default: 60)
-
-    Returns:
-        List of all records from medicine_status.
-    """
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-
-    try:
-        records = db.query_all_data(minutes)
-        return records
-    except Exception as e:
-        logger.error(f"Error querying data: {e}")
-        raise HTTPException(status_code=500, detail="Failed to query data")
-
-
-@app.get("/api/medicine/{mac}/history")
-async def get_medicine_history(
-    mac: str,
-    hours: int = 24
-) -> List[Dict[str, Any]]:
-    """Get position and status history for a specific medicine.
-
-    Args:
-        mac: MAC address of the medicine beacon.
-        hours: Number of hours of history to retrieve (default: 24).
-
-    Returns:
-        List of historical records for the medicine.
-
-    Raises:
-        HTTPException: If database is not available or query fails.
-    """
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-
-    if hours < 1 or hours > 168:  # Max 1 week
-        raise HTTPException(status_code=400, detail="Hours must be between 1 and 168")
-
-    try:
-        history = db.query_medicine_history(mac, hours)
-        return history
-    except Exception as e:
-        logger.error(f"Error querying medicine history for {mac}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to query medicine history")
 
 
 @app.get("/api/alerts")
-async def get_alerts(
-    hours: int = 24,
-    severity: Optional[str] = None
-) -> List[Dict[str, Any]]:
-    """Get alerts from the system.
+async def get_alerts() -> List[Dict[str, Any]]:
+    """Get recent alerts from live in-memory state."""
+    if medicine_tracker is None:
+        raise HTTPException(status_code=503, detail="Tracker not available")
+    return medicine_tracker.get_alerts()
 
-    Args:
-        hours: Number of hours of alerts to retrieve (default: 24).
-        severity: Optional filter by severity ("info", "warning", "critical").
 
-    Returns:
-        List of alert records.
+# ---------------------------------------------------------------------------
+# History API (InfluxDB)
+# ---------------------------------------------------------------------------
 
-    Raises:
-        HTTPException: If database is not available or query fails.
-    """
+@app.get("/api/history/alerts")
+async def get_alert_history(hours: int = 24) -> List[Dict[str, Any]]:
+    """Get historical alerts from InfluxDB."""
     if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-
-    if hours < 1 or hours > 168:
-        raise HTTPException(status_code=400, detail="Hours must be between 1 and 168")
-
-    if severity and severity not in ["info", "warning", "critical"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Severity must be one of: info, warning, critical"
-        )
-
+        raise HTTPException(status_code=503, detail="InfluxDB not available — no history")
     try:
-        alerts = db.query_alerts(hours=hours, severity=severity)
-        return alerts
+        return db.query_alerts(hours=hours)
     except Exception as e:
-        logger.error(f"Error querying alerts: {e}")
-        raise HTTPException(status_code=500, detail="Failed to query alerts")
+        logger.error(f"Error querying alert history: {e}")
+        raise HTTPException(status_code=500, detail="Failed to query alert history")
+
+
+@app.get("/api/history/scans/{mac}")
+async def get_scan_history(mac: str, hours: int = 24) -> List[Dict[str, Any]]:
+    """Get historical scan data for a specific tag from InfluxDB."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="InfluxDB not available — no history")
+    mac = _validate_mac(mac)
+    try:
+        return db.query_medicine_history(mac, hours)
+    except Exception as e:
+        logger.error(f"Error querying scan history for {mac}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to query scan history")
 
 
 @app.get("/api/status")
 async def get_status() -> Dict[str, Any]:
-    """Get system status and buffer statistics.
-
-    Returns:
-        Dict with system status information.
-
-    Raises:
-        HTTPException: If tracker is not available.
-    """
+    """Get system status and buffer statistics."""
     if medicine_tracker is None:
         raise HTTPException(status_code=503, detail="Tracker not available")
 
-    try:
-        buffer_stats = medicine_tracker.get_buffer_stats()
-        return {
-            "status": "running",
-            "buffer": buffer_stats,
-            "mqtt_connected": mqtt_client.is_connected() if mqtt_client else False
+    return {
+        "status": "running",
+        "buffer": medicine_tracker.get_buffer_stats(),
+        "mqtt_connected": mqtt_client.is_connected() if mqtt_client else False,
+        "receivers": {
+            rid: {"x": coords[0], "y": coords[1]}
+            for rid, coords in settings.RECEIVER_COORDINATES.items()
+        },
+    }
+
+
+@app.get("/api/ack_status")
+async def get_ack_status() -> Dict[str, Any]:
+    """Get ACK orchestration status for all tracked tags."""
+    if ack_orchestrator:
+        return ack_orchestrator.get_ack_stats()
+    return {}
+
+
+@app.get("/api/tags")
+async def list_tags() -> List[Dict[str, Any]]:
+    """List all registered tags from the registry."""
+    tags = tag_registry.get_all_tags()
+    # Don't expose raw hmac_key bytes in API
+    return [
+        {
+            "mac": t["mac"],
+            "medicine_name": t["medicine_name"],
+            "tag_id": t["tag_id"],
+            "registered_at": t["registered_at"],
         }
-    except Exception as e:
-        logger.error(f"Error getting status: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get status")
+        for t in tags
+    ]
+
+
+@app.post("/api/tags")
+async def register_tag_api(
+    mac: str,
+    medicine_name: str,
+    tag_id: str = "m5tag",
+) -> Dict[str, str]:
+    """Register a new tag (without serial provisioning).
+
+    Generates a random HMAC key. Use provision.py flash for full
+    serial provisioning with NVS key write.
+    """
+    import os
+    mac = _validate_mac(mac)
+    hmac_key = os.urandom(32)
+    tag_registry.register_tag(mac, hmac_key, medicine_name, tag_id)
+
+    # Publish updated whitelist so RPis pick it up
+    if mqtt_client:
+        publish_whitelist(mqtt_client)
+
+    return {
+        "status": "registered",
+        "mac": mac,
+        "medicine_name": medicine_name,
+        "tag_id": tag_id,
+        "hmac_key_hex": hmac_key.hex(),
+    }
+
+
+@app.delete("/api/tags/{mac}")
+async def remove_tag_api(mac: str) -> Dict[str, str]:
+    """Remove a tag from the registry."""
+    mac = _validate_mac(mac)
+    tag = tag_registry.get_tag(mac)
+    if tag is None:
+        raise HTTPException(status_code=404, detail=f"Tag {mac} not found")
+
+    tag_registry.remove_tag(mac)
+
+    # Publish updated whitelist
+    if mqtt_client:
+        publish_whitelist(mqtt_client)
+
+    return {"status": "removed", "mac": mac}
+
+
+@app.post("/api/emergency/{mac}")
+async def trigger_emergency(mac: str) -> Dict[str, str]:
+    """Manually trigger emergency search for a tag."""
+    if ack_orchestrator is None:
+        raise HTTPException(status_code=503, detail="ACK orchestrator not available")
+    if mqtt_client is None:
+        raise HTTPException(status_code=503, detail="MQTT not available")
+
+    mac = _validate_mac(mac)
+    ack_orchestrator.trigger_emergency_search(mac)
+
+    return {"status": "emergency search triggered", "mac": mac}
 
 
 if __name__ == "__main__":

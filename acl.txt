@@ -1,9 +1,8 @@
-# RPi - can publish scans, RSSI, heartbeats; read whitelist and ack checks; write ack results
+# RPi - can publish scans, RSSI, and heartbeats
 user rpi
 topic write hospital/medicine/scan/#
 topic write hospital/medicine/rssi_only/#
 topic write hospital/system/rpi_status/#
-topic read hospital/system/whitelist
 topic read hospital/medicine/ack_check/#
 topic write hospital/medicine/ack_result/#
 topic read hospital/medicine/command_ble/#
@@ -15,14 +14,13 @@ topic write hospital/medicine/emergency/#
 topic write hospital/medicine/ack/#
 topic read hospital/medicine/command/#
 
-# Coordinator (backend) - reads scans/emergencies/results, writes commands/checks/whitelist
+# Coordinator - can read scans and emergencies, publish deduplicated data and status
 user coordinator
 topic read hospital/medicine/scan/#
 topic read hospital/medicine/emergency/#
 topic write hospital/medicine/rssi/#
 topic write hospital/medicine/command/#
 topic write hospital/system/coordinator_status
-topic write hospital/system/whitelist
 topic write hospital/medicine/ack_check/#
 topic read hospital/medicine/ack_result/#
 topic write hospital/medicine/command_ble/#
