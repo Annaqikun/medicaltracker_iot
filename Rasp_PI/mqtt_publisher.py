@@ -306,14 +306,46 @@ async def scan_and_publish():
 
             def callback(device, advertisement_data):
                 mac = device.address.upper()
-                device_name = device.name if device.name else "Unknown"
+                device_name = (
+                    advertisement_data.local_name
+                    or device.name
+                    or "Unknown"
+                )
 
                 is_known_tag = mac in [tag.upper() for tag in KNOWN_MEDICINE_TAGS]
                 if PUBLISH_ONLY_KNOWN_TAGS and not is_known_tag:
                     return
 
+                existing = scan_results.get(mac)
+
                 if device_name == "MED_TAG":
-                    scan_results[mac] = (device, advertisement_data)
+                    if existing is None:
+                        scan_results[mac] = {
+                            "device": device,
+                            "adv_data": advertisement_data,
+                            "matched_name": True,
+                        }
+                    else:
+                        existing["device"] = device
+                        existing["matched_name"] = True
+
+                        # Prefer the frame that actually carries manufacturer data.
+                        if advertisement_data.manufacturer_data.get(COMPANY_ID):
+                            existing["adv_data"] = advertisement_data
+                        elif not existing["adv_data"].manufacturer_data.get(COMPANY_ID):
+                            existing["adv_data"] = advertisement_data
+                    return
+
+                # Some adapters report manufacturer data on scan response frames
+                # without the local name. If we've already matched the tag name for
+                # this MAC, keep the richer frame so RSSI/manufacturer data updates.
+                if (
+                    existing is not None
+                    and existing.get("matched_name")
+                    and advertisement_data.manufacturer_data.get(COMPANY_ID)
+                ):
+                    existing["device"] = device
+                    existing["adv_data"] = advertisement_data
 
             async with BleakScanner(callback, scanning_mode="active"):
                 await asyncio.sleep(SCAN_WINDOW_SECONDS)
@@ -321,16 +353,33 @@ async def scan_and_publish():
             await asyncio.sleep(3)  # give BlueZ time to fully release adapter
 
             # Process all collected advertisements
-            for mac, (device, adv_data) in scan_results.items():
+            for mac, result in scan_results.items():
+                device = result["device"]
+                adv_data = result["adv_data"]
                 _seen_devices[mac] = (device, time.time())
                 raw_rssi = adv_data.rssi
+                logger.info(
+                    f"[SCANDBG] MAC={mac} name={adv_data.local_name or device.name or 'Unknown'} "
+                    f"rssi={raw_rssi} mfg_keys={list(adv_data.manufacturer_data.keys())}"
+                )
                 mfg_bytes = adv_data.manufacturer_data.get(COMPANY_ID)
                 if mfg_bytes:
+                    logger.info(f"[SCANDBG] MAC={mac} mfg_len={len(mfg_bytes)}")
                     parsed_data = parser.parse_manufacturer(mfg_bytes, mac)
                     if parsed_data:
                         smoothed = smooth_rssi(mac, raw_rssi)
                         if publisher.publish_scan(mac, smoothed, parsed_data):
                             publisher.publish_rssi(mac, smoothed)
+                    else:
+                        logger.warning(
+                            f"[SCANDBG] Parser returned None for {mac} with "
+                            f"mfg_len={len(mfg_bytes)} bytes={mfg_bytes.hex()}"
+                        )
+                else:
+                    logger.warning(
+                        f"[SCANDBG] No manufacturer data for {mac}; "
+                        f"available_keys={list(adv_data.manufacturer_data.keys())}"
+                    )
 
             # Heartbeat
             if time.time() - last_heartbeat >= 60:
