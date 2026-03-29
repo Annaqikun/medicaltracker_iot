@@ -74,6 +74,8 @@ static bool tempAlertActive = false;
 
 static const unsigned long PERIODIC_WIFI_SYNC_MS = 1800000; // 30 minutes
 static unsigned long lastPeriodicSyncMs = 0;
+static const unsigned long PERIODIC_BLE_REFRESH_MS = 1000; // keep seq advancing for RSSI updates
+static unsigned long lastBleRefreshMs = 0;
 
 void drawSerial() {
   Serial.printf("MAC: %s\n", getMacString().c_str());
@@ -114,6 +116,7 @@ void setup() {
   tempAlertActive = (getTemperature() > 25.0f);
 
   lastPeriodicSyncMs = millis();
+  lastBleRefreshMs = millis();
 
   initBLE();
 
@@ -204,8 +207,13 @@ void loop() {
       lastPeriodicSyncMs = millis();
   }
 
+  if (!isWifiSessionActive() && (millis() - lastBleRefreshMs >= PERIODIC_BLE_REFRESH_MS)) {
+    bleDirty = true;
+  }
+
   if (bleDirty && !isWifiSessionActive()) {
     updateAdvertising();
+    lastBleRefreshMs = millis();
     bleDirty = false;
   }
   if (displayDirty) drawM5Screen();

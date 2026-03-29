@@ -19,7 +19,7 @@ extern void drawM5Screen();
 static const char* WIFI_SSID = "nice_wifi";
 static const char* WIFI_PASSWORD = "3.141592";
 
-static IPAddress MQTT_IP(192, 168, 0, 5);  // change this to your MQTT broker's IP address
+static IPAddress MQTT_IP(192, 168, 0, 15);  // change this to your MQTT broker's IP address
 static const uint16_t MQTT_PORT = 1883;
 static const char* MQTT_PASSWORD = "1234";  // change this for each M5Stick
 
