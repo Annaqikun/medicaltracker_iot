@@ -17,7 +17,6 @@ from typing import Any, Dict, Optional
 import paho.mqtt.client as mqtt
 
 from config import settings
-from database import Database
 import tag_registry
 
 logger = logging.getLogger(__name__)
@@ -34,13 +33,13 @@ class AckOrchestrator:
     :meth:`on_ack_result`.
     """
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, tracker) -> None:
         """Initialise the ACK orchestrator.
 
         Args:
-            database: Database instance used for writing alerts.
+            tracker: MedicineTracker instance used for writing alerts.
         """
-        self.db = database
+        self._tracker = tracker
 
         # {mac: {"last_success_ts": datetime|None, "attempts": int, "last_request_ts": datetime|None}}
         self._ack_state: Dict[str, Dict[str, Any]] = {}
@@ -128,7 +127,7 @@ class AckOrchestrator:
                         f"[ACK] Tag {mac} potentially lost after "
                         f"{state['attempts']} failed attempts"
                     )
-                    self.db.write_alert(
+                    self._tracker._add_alert(
                         mac=mac,
                         alert_type="tag_potentially_lost",
                         message=(
@@ -239,6 +238,8 @@ class AckOrchestrator:
                     self._ack_state[mac]["resume_requested"] = False
 
                 logger.info(f"[ACK] Tag {mac} confirmed alive by {receiver_id}")
+                self._tracker.resolve_alerts(mac, "lost_ble", f"Tag {mac} reconnected via {receiver_id}")
+                self._tracker.resolve_alerts(mac, "tag_potentially_lost")
 
                 if should_resume and self._mqtt_client:
                     cmd_topic = f"hospital/medicine/command/{mac}"
@@ -269,15 +270,38 @@ class AckOrchestrator:
     # ------------------------------------------------------------------
 
     def on_emergency_message(self, client: Any, userdata: Any, message: Any) -> None:
-        """Handle M5 emergency messages (e.g. lost_ble status)."""
+        """Handle M5 emergency messages (lost_ble, temp_high, etc)."""
         try:
             payload = json.loads(message.payload.decode("utf-8"))
             mac = payload.get("mac")
             status = payload.get("status")
 
-            if status == "lost_ble" and mac:
-                logger.info(f"[ACK] Emergency message from {mac}: {status}")
+            if not mac or not status:
+                return
+
+            logger.info(f"[ACK] Emergency message from {mac}: {status}")
+
+            if status == "lost_ble":
                 self.trigger_emergency_search(mac)
+                self._tracker._add_alert(
+                    mac=mac, alert_type="lost_ble",
+                    message=f"Tag {mac} lost BLE connection",
+                    severity="critical",
+                )
+            elif status == "temp_high":
+                temp = payload.get("temp_c")
+                battery = payload.get("battery_percent")
+                self._tracker._add_alert(
+                    mac=mac, alert_type="temp_high",
+                    message=f"High temperature: {temp}°C (battery {battery}%)" if temp else "High temperature detected",
+                    severity="warning",
+                )
+            else:
+                self._tracker._add_alert(
+                    mac=mac, alert_type=status,
+                    message=f"Emergency: {status}",
+                    severity="warning",
+                )
         except Exception as e:
             logger.error(f"[ACK] Failed to process emergency message: {e}")
 

@@ -15,6 +15,25 @@ env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 
+def _parse_receiver_coordinates() -> Dict[str, Tuple[float, float]]:
+    """Parse RECEIVER_COORDINATES from env. Format: 'id1:x,y;id2:x,y;...'"""
+    raw = os.getenv("RECEIVER_COORDINATES")
+    if not raw:
+        return {
+            "receiver_1": (0.0, 0.0),
+            "receiver_2": (10.0, 0.0),
+            "receiver_3": (5.0, 8.66),
+            "receiver_4": (5.0, 2.89),
+        }
+    return {
+        entry.split(":")[0]: (
+            float(entry.split(":")[1].split(",")[0]),
+            float(entry.split(":")[1].split(",")[1]),
+        )
+        for entry in raw.split(";")
+    }
+
+
 class Settings:
     """Main application settings using python-dotenv."""
 
@@ -32,14 +51,9 @@ class Settings:
     INFLUXDB_ORG = os.getenv("INFLUXDB_ORG", "medical")
     INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET", "medicine_tracking")
 
-    # Receiver coordinates for trilateration (receiver_id -> (x, y, z))
+    # Receiver coordinates for trilateration (receiver_id -> (x, y))
     # Coordinates are in meters relative to a reference point
-    RECEIVER_COORDINATES: Dict[str, Tuple[float, float, float]] = {
-        "receiver_1": (0.0, 0.0, 2.0),
-        "receiver_2": (10.0, 0.0, 2.0),
-        "receiver_3": (5.0, 8.66, 2.0),
-        "receiver_4": (5.0, 2.89, 2.0),
-    }
+    RECEIVER_COORDINATES: Dict[str, Tuple[float, float]] = _parse_receiver_coordinates()
 
     # RSSI to distance conversion parameters
     RSSI_REFERENCE = int(os.getenv("RSSI_REFERENCE", "-59"))

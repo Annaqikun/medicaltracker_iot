@@ -136,10 +136,11 @@ class Database:
         mac: str,
         x: float,
         y: float,
-        z: float,
         accuracy: float,
         medicine: str,
         receiver_count: int,
+        confidence: float = 0.0,
+        method: str = "unknown",
         timestamp: Optional[datetime] = None
     ) -> bool:
         """Store calculated position for a medicine.
@@ -148,10 +149,11 @@ class Database:
             mac: MAC address of the medicine beacon.
             x: X coordinate in meters.
             y: Y coordinate in meters.
-            z: Z coordinate in meters.
-            accuracy: Position accuracy/error estimate in meters.
+            accuracy: Position accuracy/error estimate (RMSE) in meters.
             medicine: Name/type of medicine.
             receiver_count: Number of receivers used for calculation.
+            confidence: Numeric confidence score (0-100).
+            method: Localization method used ("heron", "trilateration", "weighted_centroid").
             timestamp: Optional timestamp (defaults to now).
 
         Returns:
@@ -162,18 +164,19 @@ class Database:
                 Point("medicine_position")
                 .tag("mac", mac)
                 .tag("medicine", medicine)
+                .tag("method", method)
                 .field("x", x)
                 .field("y", y)
-                .field("z", z)
                 .field("accuracy", accuracy)
                 .field("receiver_count", receiver_count)
+                .field("confidence", confidence)
             )
 
             if timestamp:
                 point = point.time(timestamp, WritePrecision.NS)
 
-            self.write_api.write(bucket=self.bucket, record=point)
-            logger.info(f"Wrote position for {mac}: ({x:.2f}, {y:.2f}, {z:.2f})")
+            self.write_api.write(bucket=self.bucket, org=self.org, record=point)
+            logger.info(f"Wrote position for {mac}: ({x:.2f}, {y:.2f}) method={method} confidence={confidence:.0f}")
             return True
         except Exception as e:
             logger.error(f"Failed to write position: {e}")
@@ -222,7 +225,7 @@ class Database:
             if timestamp:
                 point = point.time(timestamp, WritePrecision.NS)
 
-            self.write_api.write(bucket=self.bucket, record=point)
+            self.write_api.write(bucket=self.bucket, org=self.org, record=point)
             logger.warning(f"Wrote alert for {mac}: {alert_type} - {message}")
             return True
         except Exception as e:
@@ -291,7 +294,9 @@ class Database:
             |> filter(fn: (r) => r._measurement == "medicine_status")
             |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
             |> group(columns: ["mac"])
-            |> last()
+            |> sort(columns: ["_time"], desc: true)
+            |> limit(n: 1)
+            |> group()
             |> limit(n: {limit})
         '''
 
@@ -321,24 +326,36 @@ class Database:
 
     def query_latest_positions(
         self,
-        limit: int = 100
+        limit: int = 100,
+        hours: int = 168
     ) -> List[Dict[str, Any]]:
         """Get the latest calculated positions for all medicines.
 
         Args:
             limit: Maximum number of results to return.
+            hours: How many hours of history to scan for latest points.
 
         Returns:
             List[Dict[str, Any]]: List of position records with keys:
-                mac, medicine, x, y, z, accuracy, receiver_count, time.
+                mac, medicine, x, y, accuracy, confidence, method, receiver_count, time.
         """
         query = f'''
         from(bucket: "{self.bucket}")
-            |> range(start: -1h)
+            |> range(start: -{hours}h)
             |> filter(fn: (r) => r._measurement == "medicine_position")
+            |> filter(fn: (r) =>
+                r._field == "x" or
+                r._field == "y" or
+                r._field == "receiver_count" or
+                r._field == "accuracy" or
+                r._field == "confidence"
+            )
             |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
             |> group(columns: ["mac"])
-            |> last()
+            |> sort(columns: ["_time"], desc: true)
+            |> limit(n: 1)
+            |> group()
+            |> sort(columns: ["_time"], desc: true)
             |> limit(n: {limit})
         '''
 
@@ -353,8 +370,9 @@ class Database:
                         "medicine": record.values.get("medicine"),
                         "x": record.values.get("x"),
                         "y": record.values.get("y"),
-                        "z": record.values.get("z"),
                         "accuracy": record.values.get("accuracy"),
+                        "confidence": record.values.get("confidence"),
+                        "method": record.values.get("method"),
                         "receiver_count": record.values.get("receiver_count"),
                         "time": record.get_time()
                     })
