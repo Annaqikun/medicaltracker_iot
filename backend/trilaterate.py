@@ -299,10 +299,10 @@ def localize(
     Takes (x, y, distance) tuples.
 
     Pipeline:
-        3+ receivers -> heron_localize()       confidence=high
-                     -> trilaterate() (lstsq)  confidence=medium
-                     -> weighted_centroid()     confidence=medium
-        <3 receivers -> weighted_centroid()     confidence=low
+        3+ receivers -> heron_localize()        confidence=high
+                     -> trilaterate() (lstsq)   confidence=medium (rank check handles bad geometry)
+                     -> weighted_centroid()      confidence=medium
+        <3 receivers -> weighted_centroid()      confidence=low
 
     Returns:
         {"x": float, "y": float, "method": str, "confidence": str} or None.
@@ -312,15 +312,9 @@ def localize(
         if pos:
             return {"x": pos[0], "y": pos[1], "method": "heron", "confidence": "high"}
 
-        geometry_valid = any(
-            abs((x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1)) > 1e-6
-            for (x1, y1, _), (x2, y2, _), (x3, y3, _)
-            in itertools.combinations(receivers, 3)
-        )
-        if geometry_valid:
-            pos = trilaterate(receivers)
-            if pos:
-                return {"x": pos[0], "y": pos[1], "method": "trilateration", "confidence": "medium"}
+        pos = trilaterate(receivers)
+        if pos:
+            return {"x": pos[0], "y": pos[1], "method": "trilateration", "confidence": "medium"}
 
     pos = weighted_centroid(receivers)
     if pos is None:

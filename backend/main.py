@@ -19,7 +19,7 @@ MAC_RE = re.compile(r'^[0-9A-F]{2}(:[0-9A-F]{2}){5}$')
 
 def _validate_mac(mac: str) -> str:
     """Uppercase and validate a MAC address. Raises HTTPException if invalid."""
-    mac = _validate_mac(mac)
+    mac = mac.upper()
     if not MAC_RE.match(mac):
         raise HTTPException(status_code=400, detail=f"Invalid MAC address: {mac}")
     return mac
