@@ -71,10 +71,12 @@ def get_smoothed_distance(
     rssi_reference: int = -59,
     path_loss_exponent: float = 2.5,
     receiver_id: str = "",
-) -> float:
+) -> Optional[float]:
     """Kalman-smooth a raw RSSI reading then convert to distance.
 
     Creates a per-(mac, receiver_id) KalmanFilter on first call. Thread-safe.
+    Rejects positive RSSI values (invalid telemetry) before they can
+    contaminate the Kalman state.
 
     Args:
         mac: Tag identifier.
@@ -84,8 +86,14 @@ def get_smoothed_distance(
         receiver_id: Receiver identifier (each receiver gets its own filter).
 
     Returns:
-        float: Smoothed distance estimate in metres.
+        Smoothed distance estimate in metres, or None if the raw RSSI
+        is invalid (positive values are rejected).
     """
+    if rssi > 0:
+        logger.warning(
+            f"Rejecting invalid positive RSSI {rssi} dBm for {mac}:{receiver_id}"
+        )
+        return None
     key = f"{mac}:{receiver_id}"
     with _kalman_lock:
         if key not in _kalman_filters:
@@ -122,25 +130,19 @@ def rssi_to_distance(
     if path_loss_exponent <= 0:
         raise ValueError("Path loss exponent must be positive")
 
-    # Handle edge cases for very weak signals
     if rssi < -90:
-        logger.warning(f"Very weak RSSI: {rssi} dBm, distance may be unreliable")
-        return 50.0  # Cap at 50 metres for very weak signals
-
-    if rssi > 0:
-        logger.warning(f"Unexpected positive RSSI: {rssi} dBm, treating as 0")
-        rssi = 0
+        logger.warning(f"Very weak RSSI: {rssi:.1f} dBm, distance may be unreliable")
 
     # Calculate distance using path loss model
     distance = math.pow(10.0, (rssi_reference - rssi) / (10.0 * path_loss_exponent))
 
-    # Sanity check: cap maximum distance
-    max_distance = 100.0
+    # Single cap — applies uniformly to weak signals and model outliers
+    max_distance = 50.0
     if distance > max_distance:
         logger.debug(f"Capped distance from {distance:.2f}m to {max_distance}m")
         return max_distance
 
-    logger.debug(f"RSSI {rssi} dBm -> Distance {distance:.2f}m")
+    logger.debug(f"RSSI {rssi:.1f} dBm -> Distance {distance:.2f}m")
     return distance
 
 
