@@ -69,10 +69,6 @@ class Database:
             logger.error(f"Failed to connect to InfluxDB: {e}")
             raise ConnectionError(f"Failed to connect to InfluxDB: {e}") from e
 
-    def _rssi_to_distance(self, rssi: int, rssi_ref: int = -59, n: float = 2.5) -> float:
-        """Convert RSSI to approximate distance in meters."""
-        return 10 ** ((rssi_ref - rssi) / (10 * n))
-
     def write_scan(
         self,
         mac: str,

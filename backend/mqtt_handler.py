@@ -210,6 +210,8 @@ class MedicineTracker:
                     self.settings.path_loss_exponent,
                     receiver_id=receiver_id,
                 )
+                if distance is None:
+                    return
                 self._update_buffer(mac=mac, receiver_id=receiver_id,
                                     distance=distance, medicine=medicine)
                 self._try_calculate_position(mac, medicine)
@@ -264,6 +266,8 @@ class MedicineTracker:
                 self.settings.path_loss_exponent,
                 receiver_id=receiver_id,
             )
+            if distance is None:
+                return
 
             # Update in-memory latest status
             with self._status_lock:
