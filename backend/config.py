@@ -63,8 +63,8 @@ class Settings:
     TAG_DB_PATH = os.getenv("TAG_DB_PATH", "tag_registry.db")
 
     # Buffer management settings
-    BUFFER_TIMEOUT_SECONDS = float(os.getenv("BUFFER_TIMEOUT_SECONDS", "20.0"))
-    POSITION_CALCULATION_INTERVAL = float(os.getenv("POSITION_CALCULATION_INTERVAL", "1.0"))
+    BUFFER_TIMEOUT_SECONDS = float(os.getenv("BUFFER_TIMEOUT_SECONDS", "10.0"))
+    POSITION_CALCULATION_INTERVAL = float(os.getenv("POSITION_CALCULATION_INTERVAL", "2.0"))
 
     # ACK orchestration
     ACK_PERIOD_SECONDS = float(os.getenv("ACK_PERIOD_SECONDS", "120.0"))
