@@ -1,7 +1,7 @@
 #include "wifi_manager.h"
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <M5Unified.h>
 #include "temp.h"
@@ -10,15 +10,18 @@
 #include "ble_ack.h"
 #include "ble.h"
 
+extern const uint8_t certs_ca_crt_start[] asm("_binary_certs_ca_crt_start");
+extern const uint8_t certs_ca_crt_end[]   asm("_binary_certs_ca_crt_end");  // not used as of now
+
 extern bool findMeActive;
 extern void drawM5Screen();
 
 static const char* WIFI_SSID = "azrylaptop";
 static const char* WIFI_PASSWORD = "azryhome1234";
 
-static IPAddress MQTT_IP(192, 168, 137, 1);  // Windows hotspot / MQTT broker IP
-static const uint16_t MQTT_PORT = 8883;      // TLS port
-static const char* MQTT_PASSWORD = "1234";  // change this for each M5Stick
+static IPAddress MQTT_IP(192, 168, 137, 1);  // change this to your MQTT broker's IP address
+static const uint16_t MQTT_PORT = 8883;
+static const char* MQTT_PASSWORD = "password000";  // change this for each M5Stick
 
 static const unsigned long WIFI_SESSION_DURATION_MS = 10000;
 static const unsigned long WIFI_RETRY_INTERVAL_MS = 3000;
@@ -29,8 +32,10 @@ static String currentTagId;
 static WifiSessionReason currentSessionReason = WifiSessionReason::None;
 
 // INTERNAL STATE
-static WiFiClient wifiClient;
-static PubSubClient mqttClient(wifiClient);
+// For TLS (port 8883): uncomment WiFiClientSecure, comment WiFiClient
+static WiFiClientSecure wifiClientSecure;
+// static WiFiClient wifiPlainClient;
+static PubSubClient mqttClient(wifiClientSecure);
 
 static bool wifiSessionActive = false;
 static unsigned long wifiSessionStartMs = 0;
@@ -148,6 +153,9 @@ static void connectMqttIfNeeded() {
     Serial.println("[MQTT] Connecting...");
     Serial.printf("[MQTT] Broker: %s:%u\n", MQTT_IP.toString().c_str(), MQTT_PORT);
 
+    // setInsecure() skips certificate verification (OK for dev)
+    wifiClientSecure.setInsecure();
+
     if (!mqttClient.connect(clientId.c_str(), "m5tag", MQTT_PASSWORD)) {
         Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
         return;
@@ -178,6 +186,8 @@ static void connectMqttIfNeeded() {
 // PUBLIC API
 void initWifiModule(const char* tagId) {
     currentTagId = tagId;
+
+    // wifiClientSecure.setCACert((const char*)certs_ca_crt_start);  // disabled — using plaintext port 1883 for dev
 
     mqttClient.setServer(MQTT_IP, MQTT_PORT);
     mqttClient.setBufferSize(512);
