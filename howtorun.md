@@ -77,12 +77,28 @@ protocol mqtt
 # keyfile /etc/mosquitto/server.key
 ```
 
-### Start
+### Start (Linux/Mac)
 ```bash
 sudo systemctl start mosquitto
-# Or: mosquitto -c /etc/mosquitto/mosquitto.conf -v
+# Or run manually with logs:
+mosquitto -c /etc/mosquitto/mosquitto.conf -v
+```
 
-# Verify
+### Start (Windows — PowerShell as Administrator)
+```powershell
+$env:OPENSSL_CONF="C:\Users\delvi\OneDrive\Desktop\SIT_Stuff\year2\IOT\project\certs\openssl_tls12.cnf"
+mosquitto -c "C:\Program Files\mosquitto\mosquitto.conf" -v
+```
+
+> **Note:** `OPENSSL_CONF` must be set in the same terminal session before starting — without it TLS on port 8883 will fail. The `-v` flag shows verbose logs.
+>
+> Alternatively as a Windows service (requires PC restart after first setup for the env var to take effect):
+> ```powershell
+> net start mosquitto
+> ```
+
+### Verify
+```bash
 mosquitto_sub -h localhost -p 1883 -u dashboard -P 1234 -t "hospital/#" -v
 ```
 
@@ -225,15 +241,16 @@ pio device monitor -b 115200
 M5 must be showing the **cat screen** (no key in NVS — either first flash or after NVS erase).
 
 ```bash
-# Check USB port
+# Find USB port:
+#   Windows: check Device Manager → Ports (COMx)
 ls /dev/cu.usb*          # macOS
 ls /dev/ttyUSB*          # Linux
 
-# Provision
-python provision.py flash \
-  --port /dev/cu.usbserial-XXXX \
-  --medicine "PANADOL" \
-  --tag-id "m5tag"
+# Provision (Windows)
+python provision.py flash --port COM3 --medicine "PANADOL" --tag-id "m5tag"
+
+# Provision (Linux/Mac)
+python provision.py flash --port /dev/cu.usbserial-XXXX --medicine "PANADOL" --tag-id "m5tag"
 ```
 
 This: reads MAC from M5 → generates 32-byte HMAC key → flashes to NVS → registers in SQLite → M5 reboots.
@@ -243,13 +260,23 @@ This: reads MAC from M5 → generates 32-byte HMAC key → flashes to NVS → re
 # Check USB
 curl http://localhost:8000/api/provision/usb
 
-# Flash
+# Flash (Windows)
+curl -X POST "http://localhost:8000/api/provision/flash?port=COM3&medicine_name=PANADOL"
+
+# Flash (Linux/Mac)
 curl -X POST "http://localhost:8000/api/provision/flash?port=/dev/cu.usbserial-XXXX&medicine_name=PANADOL"
 ```
 
-### Option C: Manual registration (no USB — key must be flashed separately)
+### Option C: Manual registration (no USB — registers medicine in DB only, key must already be in M5 NVS)
 ```bash
-python provision.py register --mac 4C:75:25:CB:86:62 --medicine "PANADOL"
+python provision.py register --mac 4C:75:25:CB:7E:0A --medicine "PANADOL"
+```
+
+### Check / manage registered tags
+```bash
+python provision.py list
+python provision.py get-key --mac 4C:75:25:CB:7E:0A
+python provision.py remove --mac 4C:75:25:CB:7E:0A
 ```
 
 ### Manage tags

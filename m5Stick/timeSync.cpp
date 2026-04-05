@@ -8,7 +8,8 @@ static const int  NTP_DAYLIGHT_OFFSET_SECONDS = 0;
 
 bool syncTimeWithNtp() {
     Serial.println("[TIME] Syncing time with NTP...");
-    configTime(NTP_GMT_OFFSET_SECONDS, NTP_DAYLIGHT_OFFSET_SECONDS, "pool.ntp.org", "time.nist.gov");
+    configTime(NTP_GMT_OFFSET_SECONDS, NTP_DAYLIGHT_OFFSET_SECONDS, "192.168.137.1", "pool.ntp.org");
+
 
     struct tm timeinfo;
     for (int i = 0; i < 20; ++i) {

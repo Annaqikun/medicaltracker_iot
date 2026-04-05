@@ -54,12 +54,20 @@ sudo cp /home/pi/ca.crt /etc/mosquitto/ca.crt
 # 10. Upload ca.crt to Pico via Thonny (drag to / on the Pico filesystem)
 
 # =============================================================================
-# START BROKER (main computer)
+# START BROKER (main computer — Windows, PowerShell as Administrator)
 # =============================================================================
 
-cd "C:\Program Files\mosquitto"
-mosquitto -c mosquitto.conf -v
+# OPENSSL_CONF must be set first or TLS port 8883 will fail
+$env:OPENSSL_CONF="C:\Users\delvi\OneDrive\Desktop\SIT_Stuff\year2\IOT\project\certs\openssl_tls12.cnf"
+mosquitto -c "C:\Program Files\mosquitto\mosquitto.conf" -v
 
+# Or as a Windows service (requires PC restart after first setup):
+#   net start mosquitto
+
+
+# =============================================================================
+# MONITOR TOPICS
+# =============================================================================
 
 # Subscribe over TLS using your CA cert
 mosquitto_sub -h localhost -p 8883 \
@@ -67,7 +75,6 @@ mosquitto_sub -h localhost -p 8883 \
   -u dashboard -P 1234 \
   -t "hospital/#" -v
 
-
 # See all scan data
 mosquitto_sub -h localhost -t "hospital/medicine/scan/#" -v
 
@@ -80,7 +87,6 @@ mosquitto_sub -h localhost -t "hospital/medicine/rssi/#" -v
 # See everything in the hospital topic tree
 mosquitto_sub -h localhost -t "hospital/#" -v
 
-
 # Pico heartbeat
 mosquitto_sub -h localhost -t "hospital/system/pico_status/#" -v
 
@@ -91,6 +97,9 @@ mosquitto_sub -h localhost -t "hospital/system/rpi_status/#" -v
 mosquitto_sub -h localhost -t "hospital/system/#" -v
 
 
+# =============================================================================
+# RPi SERVICE SETUP
+# =============================================================================
 
 # Copy file to RPi (run on your PC)
 scp ble-scanner.service pi@192.168.1.x:/home/pi/
@@ -103,48 +112,23 @@ sudo systemctl start ble-scanner    # start now
 
 # Check it's running:
 sudo systemctl status ble-scanner
-cd "C:\Program Files\mosquitto"
-mosquitto -c mosquitto.conf -v
 
 
-# Subscribe over TLS using your CA cert
-mosquitto_sub -h localhost -p 1883 \
-  -u rpi -P 1234 \
-  -t "hospital/medicine/rssi_only/#" -v
+# =============================================================================
+# PROVISION M5STICK TAG (set medicine name)
+# =============================================================================
 
+# Option A: Serial provisioning (M5 must show cat screen — no key in NVS)
+# Windows: find port in Device Manager > Ports (COMx)
+python provision.py flash --port COM3 --medicine "PANADOL" --tag-id "m5tag"
+# Linux/Mac:
+# python provision.py flash --port /dev/ttyUSB0 --medicine "PANADOL" --tag-id "m5tag"
 
-# See all scan data
-mosquitto_sub -h localhost -t "hospital/medicine/scan/#" -v
+# Option B: Register only (M5 already has key in NVS, just add to database)
+python provision.py register --mac 4C:75:25:CB:7E:0A --medicine "PANADOL"
 
-# See RSSI-only data
-mosquitto_sub -h localhost -t "hospital/medicine/rssi_only/#" -v
+# Check registered tags
+python provision.py list
 
-# See deduplicated data from main_computer
-mosquitto_sub -h localhost -t "hospital/medicine/rssi/#" -v
-
-# See everything in the hospital topic tree
-mosquitto_sub -h localhost -t "hospital/#" -v
-
-
-# Pico heartbeat
-mosquitto_sub -h localhost -t "hospital/system/pico_status/#" -v
-
-# RPi heartbeat
-mosquitto_sub -h localhost -t "hospital/system/rpi_status/#" -v
-
-# All heartbeats at once
-mosquitto_sub -h localhost -t "hospital/system/#" -v
-
-
-
-# Copy file to RPi (run on your PC)
-scp ble-scanner.service pi@192.168.1.x:/home/pi/
-
-# SSH into RPi, then:
-sudo mv /home/pi/ble-scanner.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable ble-scanner   # auto-start on boot
-sudo systemctl start ble-scanner    # start now
-
-# Check it's running:
-sudo systemctl status ble-scanner
+# Remove a tag
+python provision.py remove --mac 4C:75:25:CB:7E:0A

@@ -14,8 +14,8 @@ import os
 
 
 # MQTT Settings
-MQTT_BROKER = "192.168.0.5"
-MQTT_PORT = 1883
+MQTT_BROKER = "192.168.137.1"
+MQTT_PORT = 8883
 MQTT_QOS = 1
 MQTT_USERNAME = "rpi"
 MQTT_PASSWORD = "1234"
@@ -27,7 +27,7 @@ KNOWN_MEDICINE_TAGS = []
 PUBLISH_ONLY_KNOWN_TAGS = True
 WHITELIST_TOPIC = "hospital/system/whitelist"
 COMPANY_ID = 0xFFFF
-SCAN_WINDOW_SECONDS = 5
+SCAN_WINDOW_SECONDS = 3
 
 # --- Logging setup ---
 logger = logging.getLogger("ble_scanner")
@@ -350,7 +350,7 @@ async def scan_and_publish():
             async with BleakScanner(callback, scanning_mode="active"):
                 await asyncio.sleep(SCAN_WINDOW_SECONDS)
             # Scanner is now FULLY STOPPED and cleaned up
-            await asyncio.sleep(3)  # give BlueZ time to fully release adapter
+            await asyncio.sleep(1)  # give BlueZ time to fully release adapter
 
             # Process all collected advertisements
             for mac, result in scan_results.items():
@@ -367,9 +367,8 @@ async def scan_and_publish():
                     logger.info(f"[SCANDBG] MAC={mac} mfg_len={len(mfg_bytes)}")
                     parsed_data = parser.parse_manufacturer(mfg_bytes, mac)
                     if parsed_data:
-                        smoothed = smooth_rssi(mac, raw_rssi)
-                        if publisher.publish_scan(mac, smoothed, parsed_data):
-                            publisher.publish_rssi(mac, smoothed)
+                        if publisher.publish_scan(mac, raw_rssi, parsed_data):
+                            publisher.publish_rssi(mac, raw_rssi)
                     else:
                         logger.warning(
                             f"[SCANDBG] Parser returned None for {mac} with "

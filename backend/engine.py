@@ -33,7 +33,7 @@ class KalmanFilter:
         R: Measurement noise — how noisy each reading is.
     """
 
-    def __init__(self, Q: float = 0.01, R: float = 1.0) -> None:
+    def __init__(self, Q: float = 2.0, R: float = 6.0) -> None:
         self._x: Optional[float] = None  # state estimate
         self._p: float = 1.0             # estimate uncertainty
         self.Q = Q
@@ -45,6 +45,7 @@ class KalmanFilter:
             self._x = measurement
             return self._x
 
+       
         self._p += self.Q
         K = self._p / (self._p + self.R)
         self._x = self._x + K * (measurement - self._x)
@@ -137,7 +138,7 @@ def rssi_to_distance(
     distance = math.pow(10.0, (rssi_reference - rssi) / (10.0 * path_loss_exponent))
 
     # Single cap — applies uniformly to weak signals and model outliers
-    max_distance = 50.0
+    max_distance = 6.0
     if distance > max_distance:
         logger.debug(f"Capped distance from {distance:.2f}m to {max_distance}m")
         return max_distance
@@ -299,10 +300,10 @@ def localize(
     Takes (x, y, distance) tuples.
 
     Pipeline:
-        3+ receivers -> heron_localize()       confidence=high
-                     -> trilaterate() (lstsq)  confidence=medium
-                     -> weighted_centroid()     confidence=medium
-        <3 receivers -> weighted_centroid()     confidence=low
+        3+ receivers -> heron_localize()        confidence=high
+                     -> trilaterate() (lstsq)   confidence=medium (rank check handles bad geometry)
+                     -> weighted_centroid()      confidence=medium
+        <3 receivers -> weighted_centroid()      confidence=low
 
     Returns:
         {"x": float, "y": float, "method": str, "confidence": str} or None.
@@ -312,15 +313,9 @@ def localize(
         if pos:
             return {"x": pos[0], "y": pos[1], "method": "heron", "confidence": "high"}
 
-        geometry_valid = any(
-            abs((x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1)) > 1e-6
-            for (x1, y1, _), (x2, y2, _), (x3, y3, _)
-            in itertools.combinations(receivers, 3)
-        )
-        if geometry_valid:
-            pos = trilaterate(receivers)
-            if pos:
-                return {"x": pos[0], "y": pos[1], "method": "trilateration", "confidence": "medium"}
+        pos = trilaterate(receivers)
+        if pos:
+            return {"x": pos[0], "y": pos[1], "method": "trilateration", "confidence": "medium"}
 
     pos = weighted_centroid(receivers)
     if pos is None:

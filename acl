@@ -9,7 +9,7 @@ topic write hospital/medicine/ack_result/#
 topic read hospital/medicine/command_ble/#
 topic write hospital/medicine/command_ble_result/#
 
-# M5Stick tags - emergency, ack, and command topics
+# M5Stick tags (shared account) - MAC address used as tag ID in topic path
 user m5tag
 topic write hospital/medicine/emergency/#
 topic write hospital/medicine/ack/#

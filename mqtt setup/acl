@@ -1,8 +1,8 @@
-# M5Stick tags - can publish emergency and ack, subscribe to commands
+# M5Stick tags - MAC address used as tag ID in topic path
 user m5tag
-topic write hospital/medicine/emergency/m5tag
-topic write hospital/medicine/ack/m5tag
-topic read hospital/medicine/command/m5tag
+topic write hospital/medicine/emergency/#
+topic write hospital/medicine/ack/#
+topic read hospital/medicine/command/#
 
 
 # RPi Zone A

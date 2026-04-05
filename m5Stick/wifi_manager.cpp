@@ -16,12 +16,12 @@ extern const uint8_t certs_ca_crt_end[]   asm("_binary_certs_ca_crt_end");  // n
 extern bool findMeActive;
 extern void drawM5Screen();
 
-static const char* WIFI_SSID = "nice_wifi";
-static const char* WIFI_PASSWORD = "3.141592";
+static const char* WIFI_SSID = "azrylaptop";
+static const char* WIFI_PASSWORD = "azryhome1234";
 
-static IPAddress MQTT_IP(192, 168, 0, 15);  // change this to your MQTT broker's IP address
-static const uint16_t MQTT_PORT = 1883;
-static const char* MQTT_PASSWORD = "1234";  // change this for each M5Stick
+static IPAddress MQTT_IP(192, 168, 137, 1);  // change this to your MQTT broker's IP address
+static const uint16_t MQTT_PORT = 8883;
+static const char* MQTT_PASSWORD = "password000";  // change this for each M5Stick
 
 static const unsigned long WIFI_SESSION_DURATION_MS = 10000;
 static const unsigned long WIFI_RETRY_INTERVAL_MS = 3000;
@@ -33,9 +33,9 @@ static WifiSessionReason currentSessionReason = WifiSessionReason::None;
 
 // INTERNAL STATE
 // For TLS (port 8883): uncomment WiFiClientSecure, comment WiFiClient
-// static WiFiClientSecure wifiClientSecure;
-static WiFiClient wifiPlainClient;
-static PubSubClient mqttClient(wifiPlainClient);
+static WiFiClientSecure wifiClientSecure;
+// static WiFiClient wifiPlainClient;
+static PubSubClient mqttClient(wifiClientSecure);
 
 static bool wifiSessionActive = false;
 static unsigned long wifiSessionStartMs = 0;
@@ -153,13 +153,8 @@ static void connectMqttIfNeeded() {
     Serial.println("[MQTT] Connecting...");
     Serial.printf("[MQTT] Broker: %s:%u\n", MQTT_IP.toString().c_str(), MQTT_PORT);
 
-    // TLS disabled for dev — skip NTP and cert setup
-    // bool timeOk = syncTimeWithNtp();
-    // if (!timeOk) {
-    //     Serial.println("[TIME] Cannot start TLS MQTT without valid time");
-    //     return;
-    // }
-    // wifiClientSecure.setInsecure();
+    // setInsecure() skips certificate verification (OK for dev)
+    wifiClientSecure.setInsecure();
 
     if (!mqttClient.connect(clientId.c_str(), "m5tag", MQTT_PASSWORD)) {
         Serial.printf("[MQTT] Connect failed, rc=%d\n", mqttClient.state());
